@@ -1,0 +1,2423 @@
+// Smriti — options page = the desktop archive viewer.
+//
+// Implements the design from the Recall.html prototype (variant A: Desktop app) against the
+// real helper RPCs. Three-pane library/notebook layout:
+//
+//   ┌──────────┬─────────────────────────────────┬───────────────┐
+//   │ Left     │ Center                          │ Right         │
+//   │  rail    │   - results (when searching)    │  Outline      │
+//   │ Recents  │   - conversation (otherwise)    │  spine        │
+//   │ Clusters │                                 │  (the hero)   │
+//   └──────────┴─────────────────────────────────┴───────────────┘
+//
+// The Outline spine on the right is the differentiating piece: every message
+// in the open conversation is rendered as a horizontal tick whose length
+// scales with message length, grouped into chapter bands derived from the
+// helper's outline RPC. Click a tick to jump; the message pulses yellow.
+//
+// Routing (hash):
+//   #/                    → recents + welcome
+//   #/c/<conversation_id> → conversation
+//   ?msg=<message_id>     → deep-link target (auto-scroll + pulse)
+//   ?q=<query>            → seed the global search
+
+import { createRoot } from "react-dom/client";
+import React, { useCallback, useEffect, useMemo, useRef, useState, Component } from "react";
+import type { ErrorInfo } from "react";
+import type {
+  BackfillProgress,
+  ConversationMessageRow,
+  ConversationMeta,
+  OutlineSegment,
+  RecentConversation,
+  SearchHit,
+} from "@recall/shared";
+
+// ─── messaging ───────────────────────────────────────────────────────────────
+
+// Internal request/response types — looser than the NM protocol for in-browser routing.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyReq = { type: string; [key: string]: any };
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyResp = { ok: boolean; type: string; id: string; [key: string]: any };
+
+// Route requests through the background → offscreen document (new architecture).
+async function sendToHelper(req: AnyReq): Promise<AnyResp> {
+  const resp = await browser.runtime.sendMessage({ kind: "to_offscreen", ...req }) as
+    | { ok: boolean; res?: unknown; error?: string }
+    | undefined;
+  if (!resp) throw new Error("no response from background");
+  if (!resp.ok) throw new Error((resp as { error?: string }).error ?? "offscreen error");
+  // Offscreen wraps results as { ok: true, result: <data> }.
+  const inner = resp.res as { ok?: boolean; result?: unknown } | undefined;
+  const data = inner?.result ?? inner ?? {};
+  return { ok: true, type: req.type, id: "", ...((data && typeof data === "object") ? data : {}) };
+}
+
+// ─── route ──────────────────────────────────────────────────────────────────
+
+interface Route {
+  view: "home" | "conversation" | "welcome" | "settings";
+  conversationId?: string;
+  msgId?: string;
+  q?: string;
+}
+
+function parseHash(hash: string): Route {
+  const h = hash.startsWith("#") ? hash.slice(1) : hash;
+  if (!h || h === "/") return { view: "home" };
+  const u = new URL(h, "http://x");
+  const segs = u.pathname.split("/").filter(Boolean);
+  if (segs[0] === "c" && segs[1]) {
+    return {
+      view: "conversation",
+      conversationId: segs[1],
+      msgId: u.searchParams.get("msg") ?? undefined,
+      q: u.searchParams.get("q") ?? undefined,
+    };
+  }
+  if (segs[0] === "welcome") return { view: "welcome" };
+  if (segs[0] === "settings") return { view: "settings" };
+  return { view: "home" };
+}
+
+function useRoute(): [Route, (r: Route) => void] {
+  const [route, setRoute] = useState<Route>(() => parseHash(location.hash));
+  useEffect(() => {
+    const onHash = () => setRoute(parseHash(location.hash));
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+  const nav = useCallback((r: Route) => {
+    if (r.view === "home") {
+      location.hash = "/";
+    } else if (r.view === "welcome") {
+      location.hash = "/welcome";
+    } else if (r.view === "settings") {
+      location.hash = "/settings";
+    } else if (r.conversationId) {
+      const p = new URLSearchParams();
+      if (r.msgId) p.set("msg", r.msgId);
+      if (r.q) p.set("q", r.q);
+      const qs = p.toString();
+      location.hash = `/c/${r.conversationId}${qs ? "?" + qs : ""}`;
+    }
+  }, []);
+  return [route, nav];
+}
+
+// ─── theme ──────────────────────────────────────────────────────────────────
+
+type Theme = "light" | "sepia" | "dark";
+const THEMES: Theme[] = ["light", "sepia", "dark"];
+
+function useTheme(): [Theme, () => void] {
+  const [theme, setTheme] = useState<Theme>(() => {
+    const stored = localStorage.getItem("smriti:theme");
+    if (stored === "light" || stored === "sepia" || stored === "dark") return stored;
+    return "light";
+  });
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("smriti:theme", theme);
+  }, [theme]);
+  const cycle = useCallback(() => {
+    setTheme((t) => THEMES[(THEMES.indexOf(t) + 1) % THEMES.length] ?? "light");
+  }, []);
+  return [theme, cycle];
+}
+
+// ─── providers ──────────────────────────────────────────────────────────────
+
+const PROVIDERS: Record<string, { label: string; short: string; color: string }> = {
+  claude:      { label: "Claude",       short: "Claude",  color: "var(--provider-claude)"  },
+  chatgpt:     { label: "ChatGPT",      short: "ChatGPT", color: "var(--provider-chatgpt)" },
+  gemini:      { label: "Gemini",       short: "Gemini",  color: "var(--provider-gemini)"  },
+  claude_code: { label: "Claude Code",  short: "Code",    color: "var(--provider-code)"    },
+};
+
+function ProviderChip({ id, dim }: { id: string; dim?: boolean }) {
+  const p = PROVIDERS[id] ?? PROVIDERS.claude!;
+  return (
+    <span style={{
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 6,
+      fontSize: 11,
+      color: dim ? "var(--muted)" : "var(--ink-2)",
+      fontWeight: 500,
+    }}>
+      <span className="provider-dot" style={{ background: p.color }} />
+      {p.short}
+    </span>
+  );
+}
+
+// ─── text helpers ───────────────────────────────────────────────────────────
+
+function tokenize(s: string): string[] {
+  return (s.toLowerCase().match(/[a-z0-9]+/g) ?? []);
+}
+
+function highlightTerms(text: string, terms: string[]): React.ReactNode {
+  if (!terms || terms.length === 0) return text;
+  const escaped = terms.filter(Boolean).map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  if (escaped.length === 0) return text;
+  const re = new RegExp(`(${escaped.join("|")})`, "gi");
+  const parts = text.split(re);
+  return parts.map((p, i) =>
+    re.test(p) ? <mark key={i} className="match">{p}</mark> : <React.Fragment key={i}>{p}</React.Fragment>,
+  );
+}
+
+function makeSnippet(text: string, terms: string[], length = 200): string {
+  const lower = text.toLowerCase();
+  let firstAt = -1;
+  for (const t of terms) {
+    const i = lower.indexOf(t.toLowerCase());
+    if (i >= 0 && (firstAt < 0 || i < firstAt)) firstAt = i;
+  }
+  if (firstAt < 0) {
+    return text.slice(0, length) + (text.length > length ? "…" : "");
+  }
+  const start = Math.max(0, firstAt - Math.floor(length / 3));
+  const end = Math.min(text.length, start + length);
+  return (start > 0 ? "…" : "") + text.slice(start, end) + (end < text.length ? "…" : "");
+}
+
+// FTS snippets come back with <<word>> markers; convert those into a flat
+// string with the matched terms returned alongside, so we can re-highlight
+// in our own renderer (consistent with vec-only hits that have no markers).
+function parseFtsSnippet(s: string): { text: string; terms: string[] } {
+  const terms = new Set<string>();
+  const text = s.replace(/<<([^>]*)>>/g, (_m, w) => {
+    if (w) terms.add(String(w).toLowerCase());
+    return w;
+  });
+  return { text, terms: [...terms] };
+}
+
+// ─── MessageBody ────────────────────────────────────────────────────────────
+// Renders message text with fenced code blocks, lists, and inline `code`.
+
+function MessageBody({ text, terms }: { text: string; terms: string[] }) {
+  const parts = useMemo(() => {
+    const out: Array<{ kind: "prose" | "code"; text: string }> = [];
+    const fence = /```(?:\w+)?\n?([\s\S]*?)```/g;
+    let last = 0;
+    let m: RegExpExecArray | null;
+    while ((m = fence.exec(text)) !== null) {
+      if (m.index > last) out.push({ kind: "prose", text: text.slice(last, m.index) });
+      out.push({ kind: "code", text: m[1] ?? "" });
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) out.push({ kind: "prose", text: text.slice(last) });
+    return out;
+  }, [text]);
+
+  return (
+    <div className="msg-body">
+      {parts.flatMap((p, i) => {
+        if (p.kind === "code") {
+          return [
+            <pre key={`c-${i}`}>
+              <code>{highlightTerms(p.text.replace(/\n+$/, ""), terms)}</code>
+            </pre>,
+          ];
+        }
+        // Paragraphs + lists
+        const paragraphs = p.text.split(/\n\n+/);
+        return paragraphs.map((para, j) => {
+          if (!para.trim()) return null;
+          const lines = para.split("\n");
+          const isList = lines.every((l) => /^\s*(\d+\.|[-•*])\s+/.test(l) || !l.trim());
+          if (isList && lines.length > 1) {
+            const ordered = /^\s*\d+\./.test(lines[0]!);
+            const Tag = (ordered ? "ol" : "ul") as keyof React.JSX.IntrinsicElements;
+            const items = lines.filter((l) => l.trim());
+            return (
+              <Tag key={`l-${i}-${j}`}>
+                {items.map((l, k) => (
+                  <li key={k}>{renderInline(l.replace(/^\s*(\d+\.|[-•*])\s+/, ""), terms)}</li>
+                ))}
+              </Tag>
+            );
+          }
+          return <p key={`p-${i}-${j}`}>{renderInline(para, terms)}</p>;
+        });
+      })}
+    </div>
+  );
+}
+
+function renderInline(s: string, terms: string[]): React.ReactNode {
+  const parts: Array<{ kind: "t" | "c"; text: string }> = [];
+  let last = 0;
+  const re = /`([^`]+)`/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s)) !== null) {
+    if (m.index > last) parts.push({ kind: "t", text: s.slice(last, m.index) });
+    parts.push({ kind: "c", text: m[1] ?? "" });
+    last = m.index + m[0].length;
+  }
+  if (last < s.length) parts.push({ kind: "t", text: s.slice(last) });
+  return parts.map((p, i) =>
+    p.kind === "c"
+      ? <code key={i}>{highlightTerms(p.text, terms)}</code>
+      : <React.Fragment key={i}>{highlightTerms(p.text, terms)}</React.Fragment>,
+  );
+}
+
+// ─── chapter mapping ────────────────────────────────────────────────────────
+// Given outline segments (positions) and messages, derive a chapter index
+// for each message.
+
+interface ChapterMap {
+  chapters: Array<{ title: string; startMsgIdx: number; messageCount: number }>;
+  msgChapter: number[];   // chapter index per message (parallel to messages)
+}
+
+function buildChapterMap(messages: ConversationMessageRow[], segments: OutlineSegment[]): ChapterMap {
+  if (segments.length === 0) {
+    return {
+      chapters: messages.length > 0 ? [{ title: messages[0]?.content_text.slice(0, 60) ?? "Conversation", startMsgIdx: 0, messageCount: messages.length }] : [],
+      msgChapter: messages.map(() => 0),
+    };
+  }
+  // Sort segments by start_position to be safe.
+  const segs = [...segments].sort((a, b) => a.start_position - b.start_position);
+  const msgChapter: number[] = new Array(messages.length).fill(0);
+  let segIdx = 0;
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i]!;
+    while (segIdx + 1 < segs.length && m.position >= segs[segIdx + 1]!.start_position) {
+      segIdx++;
+    }
+    msgChapter[i] = segIdx;
+  }
+  const chapters = segs.map((s, ci) => {
+    const startMsgIdx = msgChapter.indexOf(ci);
+    const messageCount = msgChapter.filter((c) => c === ci).length;
+    return { title: s.preview || `Chapter ${ci + 1}`, startMsgIdx: Math.max(0, startMsgIdx), messageCount };
+  });
+  return { chapters, msgChapter };
+}
+
+// ─── ConversationSpine (the hero) ───────────────────────────────────────────
+// Every message in the conversation rendered as a horizontal tick, grouped
+// into chapter bands. User messages are taller and darker; bar length scales
+// to message length. Active position highlighted in --accent.
+
+const CHAPTER_HUES = [
+  "var(--provider-claude)",
+  "var(--provider-chatgpt)",
+  "var(--provider-gemini)",
+  "var(--provider-code)",
+  "#9a7b3d",
+  "#5e7a3d",
+  "#8a4570",
+  "#3d6e7a",
+];
+
+function ConversationSpine({
+  messages,
+  chapterMap,
+  activeIdx,
+  pulseIdx,
+  filterMatches,
+  onJump,
+}: {
+  messages: ConversationMessageRow[];
+  chapterMap: ChapterMap;
+  activeIdx: number;
+  pulseIdx: number | null;
+  filterMatches: Set<number> | null;
+  onJump: (msgIdx: number) => void;
+}) {
+  const maxLen = useMemo(
+    () => Math.max(1, ...messages.map((m) => m.content_text.length)),
+    [messages],
+  );
+
+  return (
+    <div style={{ padding: "12px 0", display: "flex", flexDirection: "column", gap: 14 }}>
+      {chapterMap.chapters.map((ch, ci) => {
+        const msgs = messages
+          .map((m, idx) => ({ m, idx }))
+          .filter(({ idx }) => chapterMap.msgChapter[idx] === ci);
+        const hue = CHAPTER_HUES[ci % CHAPTER_HUES.length] ?? "var(--muted-2)";
+        const active = msgs.some(({ idx }) => idx === activeIdx);
+        return (
+          <div key={ci} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <button
+              type="button"
+              onClick={() => onJump(ch.startMsgIdx)}
+              style={{
+                background: "transparent",
+                border: "none",
+                padding: 0,
+                cursor: "pointer",
+                textAlign: "left",
+                display: "flex",
+                alignItems: "baseline",
+                gap: 8,
+                color: active ? "var(--ink)" : "var(--ink-2)",
+              }}
+            >
+              <span className="mono" style={{ fontSize: 10, color: "var(--muted)", width: 18, flex: "0 0 18px" }}>
+                {String(ci + 1).padStart(2, "0")}
+              </span>
+              <span className="serif" style={{
+                fontSize: 13.5,
+                lineHeight: 1.3,
+                fontWeight: active ? 600 : 500,
+                overflow: "hidden",
+                display: "-webkit-box",
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: "vertical",
+              }}>
+                {ch.title}
+              </span>
+            </button>
+            <div style={{ display: "flex", flexDirection: "column", gap: 2, marginLeft: 26 }}>
+              {msgs.map(({ m, idx }) => {
+                const w = 30 + (m.content_text.length / maxLen) * 70;
+                const isActive = idx === activeIdx;
+                const isPulse = idx === pulseIdx;
+                const isFilterMatch = filterMatches?.has(idx);
+                const isUser = m.role === "user";
+                return (
+                  <button
+                    key={m.id}
+                    type="button"
+                    title={`#${idx + 1} · ${m.role} · ${m.content_text.length} chars`}
+                    onClick={() => onJump(idx)}
+                    style={{
+                      background: "transparent",
+                      border: "none",
+                      padding: "2px 0",
+                      cursor: "pointer",
+                      textAlign: "left",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                    }}
+                  >
+                    <span style={{
+                      width: 3,
+                      height: 12,
+                      background: isActive
+                        ? "var(--accent)"
+                        : isPulse
+                          ? "var(--highlight-strong)"
+                          : isFilterMatch
+                            ? "var(--ink)"
+                            : hue,
+                      opacity: isActive || isPulse || isFilterMatch ? 1 : (isUser ? 0.85 : 0.4),
+                      flex: "0 0 3px",
+                      transition: "background 0.15s, opacity 0.15s",
+                    }} />
+                    <span style={{
+                      height: isUser ? 4 : 3,
+                      width: `${w}%`,
+                      background: isActive
+                        ? "var(--accent)"
+                        : isPulse
+                          ? "var(--highlight-strong)"
+                          : isFilterMatch
+                            ? "var(--ink)"
+                            : (isUser ? "var(--ink-2)" : "var(--muted-2)"),
+                      opacity: filterMatches && !isFilterMatch && !isActive ? 0.2 : 1,
+                      transition: "background 0.15s, opacity 0.15s",
+                      borderRadius: 1,
+                    }} />
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── MiniSpine (used in results) ────────────────────────────────────────────
+// Vertical compact column showing the whole conversation, with the matched
+// message highlighted. Density-only view for the result-card sidebar.
+
+function MiniSpine({
+  messages,
+  hitMessageId,
+  width = 42,
+  height = 40,
+}: {
+  messages: ConversationMessageRow[];
+  hitMessageId: string | null;
+  width?: number;
+  height?: number;
+}) {
+  const total = messages.length;
+  if (total === 0) return null;
+  const rowH = Math.max(1, Math.floor((height - 2) / total));
+  return (
+    <div style={{
+      width,
+      height,
+      display: "flex",
+      flexDirection: "column",
+      gap: 1,
+      padding: 1,
+      background: "var(--surface-2)",
+      borderRadius: 2,
+      flex: `0 0 ${width}px`,
+    }}>
+      {messages.map((m) => {
+        const isHit = hitMessageId === m.id;
+        const w = Math.min(100, 30 + (m.content_text.length / 1500) * 70);
+        return (
+          <div key={m.id} style={{
+            height: rowH,
+            width: `${w}%`,
+            background: isHit
+              ? "var(--highlight-strong)"
+              : (m.role === "user" ? "var(--ink-2)" : "var(--muted-2)"),
+            opacity: isHit ? 1 : 0.55,
+            borderRadius: 0.5,
+          }} />
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── TopBar ─────────────────────────────────────────────────────────────────
+
+function TopBar({
+  query,
+  setQuery,
+  searching,
+  resultCount,
+  totals,
+  theme,
+  onCycleTheme,
+  helperOk,
+  onOpenSettings,
+}: {
+  query: string;
+  setQuery: (s: string) => void;
+  searching: boolean;
+  resultCount: number;
+  totals: { conversations: number; messages: number };
+  theme: Theme;
+  onCycleTheme: () => void;
+  helperOk: boolean;
+  onOpenSettings: () => void;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const active = document.activeElement;
+      const inField = active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA");
+      // "/" or Ctrl+K / Cmd+K → focus search
+      if ((e.key === "/" && !inField) || (e.key === "k" && (e.ctrlKey || e.metaKey))) {
+        e.preventDefault();
+        inputRef.current?.focus();
+        inputRef.current?.select();
+      }
+      if (e.key === "Escape" && active === inputRef.current) {
+        setQuery("");
+        inputRef.current?.blur();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [setQuery]);
+
+  return (
+    <div style={{
+      height: 52,
+      flex: "0 0 52px",
+      display: "flex",
+      alignItems: "center",
+      padding: "0 20px",
+      gap: 16,
+      borderBottom: "1px solid var(--hairline)",
+      background: "var(--bg)",
+    }}>
+      <a href="#/" className="serif" style={{
+        fontSize: 22,
+        fontWeight: 600,
+        letterSpacing: "-0.01em",
+        lineHeight: 1,
+        color: "var(--ink)",
+        textDecoration: "none",
+      }}>Smriti</a>
+      <div className="smallcaps" style={{ color: "var(--muted)", display: "flex", alignItems: "center", gap: 8 }}>
+        <span
+          title={helperOk ? "Helper connected" : "Helper not reachable"}
+          style={{
+            display: "inline-block",
+            width: 7,
+            height: 7,
+            borderRadius: "50%",
+            background: helperOk ? "var(--provider-chatgpt)" : "var(--accent)",
+          }}
+        />
+        local archive · {totals.conversations} conversation{totals.conversations === 1 ? "" : "s"} · {totals.messages} messages
+      </div>
+      <div style={{ flex: 1 }} />
+      <div style={{
+        flex: "0 1 520px",
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        padding: "7px 12px",
+        border: "1px solid var(--hairline-strong)",
+        borderRadius: 6,
+        background: "var(--surface)",
+      }}>
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" style={{ color: "var(--muted)", flex: "0 0 14px" }}>
+          <circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.4" />
+          <path d="M11 11l3 3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+        </svg>
+        <input
+          ref={inputRef}
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search your archive… (Ctrl+K)"
+          style={{
+            flex: 1,
+            border: "none",
+            background: "transparent",
+            outline: "none",
+            fontSize: 13,
+          }}
+        />
+        {query ? (
+          <span className="mono" style={{ fontSize: 11, color: "var(--muted)" }}>
+            {searching ? "…" : `${resultCount} ${resultCount === 1 ? "match" : "matches"}`}
+          </span>
+        ) : (
+          <span className="kbd">/</span>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={onCycleTheme}
+        title={`Theme: ${theme} — click to cycle`}
+        style={{
+          background: "var(--surface)",
+          border: "1px solid var(--hairline-strong)",
+          borderRadius: 4,
+          padding: "5px 10px",
+          fontSize: 11,
+          color: "var(--ink-2)",
+          cursor: "pointer",
+          fontFamily: "var(--mono)",
+          letterSpacing: "0.04em",
+        }}
+      >
+        {theme}
+      </button>
+      <button
+        type="button"
+        onClick={onOpenSettings}
+        title="Settings &amp; privacy"
+        style={{
+          background: "var(--surface)",
+          border: "1px solid var(--hairline-strong)",
+          borderRadius: 4,
+          padding: "5px 8px",
+          color: "var(--ink-2)",
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <circle cx="8" cy="8" r="2.2" stroke="currentColor" strokeWidth="1.3" />
+          <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M3.5 12.5l1.4-1.4M11.1 4.9l1.4-1.4"
+                stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
+// ─── LeftRail ───────────────────────────────────────────────────────────────
+
+const VAGUE_QUERIES = [
+  "rust enum",
+  "fuzzy search index",
+  "monkey patch fetch",
+  "embedding model",
+  "name product",
+];
+
+function LeftRail({
+  recents,
+  activeConvId,
+  onPickConv,
+  onSuggest,
+  embed,
+}: {
+  recents: RecentConversation[];
+  activeConvId: string | null;
+  onPickConv: (id: string) => void;
+  onSuggest: (s: string) => void;
+  embed: { total: number; embedded: number; pending: number } | null;
+}) {
+  return (
+    <div className="scroll" style={{
+      width: 260,
+      flex: "0 0 260px",
+      display: "flex",
+      flexDirection: "column",
+      padding: "20px 16px 16px 20px",
+      gap: 22,
+      overflow: "auto",
+      background: "var(--bg)",
+    }}>
+      <div>
+        <div className="smallcaps" style={{ marginBottom: 8 }}>Try a vague query</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          {VAGUE_QUERIES.map((s) => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => onSuggest(s)}
+              style={{
+                background: "transparent",
+                border: "none",
+                padding: "4px 8px",
+                margin: "0 -4px",
+                borderRadius: 4,
+                textAlign: "left",
+                fontSize: 12.5,
+                color: "var(--ink-2)",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+            >
+              <span style={{ color: "var(--muted-2)", fontFamily: "var(--mono)", fontSize: 10 }}>↩</span>
+              <span style={{ fontStyle: "italic" }}>{s}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <div className="smallcaps" style={{
+          marginBottom: 8,
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "baseline",
+        }}>
+          <span>Recent</span>
+          <span className="mono" style={{ fontSize: 10, color: "var(--muted-2)" }}>{recents.length}</span>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column" }}>
+          {recents.map((c) => {
+            const active = c.id === activeConvId;
+            return (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => onPickConv(c.id)}
+                style={{
+                  background: active ? "var(--surface-2)" : "transparent",
+                  border: "none",
+                  borderRadius: 4,
+                  padding: "7px 8px",
+                  margin: "1px -4px",
+                  textAlign: "left",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 3,
+                  cursor: "pointer",
+                  color: "var(--ink)",
+                }}
+              >
+                <div className="serif" style={{
+                  fontSize: 13,
+                  fontWeight: active ? 600 : 500,
+                  lineHeight: 1.25,
+                  color: active ? "var(--ink)" : "var(--ink-2)",
+                  display: "-webkit-box",
+                  WebkitLineClamp: 2,
+                  WebkitBoxOrient: "vertical" as const,
+                  overflow: "hidden",
+                }}>
+                  {c.title ?? "(untitled)"}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 10.5, color: "var(--muted)" }}>
+                  <ProviderChip id={c.platform} dim />
+                  <span>·</span>
+                  <span className="mono">{c.message_count}</span>
+                </div>
+              </button>
+            );
+          })}
+          {recents.length === 0 && (
+            <div className="stat" style={{ color: "var(--muted)", fontStyle: "italic", fontSize: 12 }}>
+              No conversations yet. Use the popup to backfill or capture live.
+            </div>
+          )}
+        </div>
+      </div>
+
+      <BackfillSection embed={embed} />
+
+      <div>
+        <div className="smallcaps" style={{
+          marginBottom: 8,
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "baseline",
+        }}>
+          <span>Topic clusters</span>
+          <span className="mono" style={{ fontSize: 10, color: "var(--muted-2)" }}>—</span>
+        </div>
+        <div style={{ fontSize: 11.5, color: "var(--muted)", fontStyle: "italic", lineHeight: 1.5 }}>
+          Coming soon. Embedding clustering across conversations will group what you've been thinking about, regardless of which AI you used.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── BackfillSection ─────────────────────────────────────────────────────────
+// Lives in the LeftRail. Replaces the old popup's backfill UI. Sends
+// start_backfill to background (which holds the long-lived NM port) and
+// listens for live progress broadcasts.
+
+type BackfillPhase = "idle" | "starting" | "running" | "done" | "failed";
+
+function BackfillSection({ embed }: { embed: { total: number; embedded: number; pending: number } | null }) {
+  const [phase, setPhase] = useState<BackfillPhase>("idle");
+  const [progress, setProgress] = useState<BackfillProgress | null>(null);
+
+  // Restore prior state from chrome.storage.local (background persisted it).
+  useEffect(() => {
+    browser.runtime.sendMessage({ kind: "get_backfill_progress" })
+      .then((resp: unknown) => {
+        const r = resp as { ok?: boolean; progress?: BackfillProgress } | undefined;
+        if (!r?.ok || !r.progress) return;
+        const p = r.progress;
+        setProgress(p);
+        if (p.state === "complete" || p.state === "partial") setPhase("done");
+        else if (p.state === "failed") setPhase("failed");
+        else setPhase("running");
+      }).catch(() => {});
+  }, []);
+
+  // Listen for live progress broadcasts.
+  useEffect(() => {
+    const handler = (msg: unknown) => {
+      if (typeof msg !== "object" || msg === null) return;
+      const m = msg as { kind?: string; progress?: BackfillProgress };
+      if (m.kind !== "backfill_progress" || !m.progress) return;
+      setProgress(m.progress);
+      const s = m.progress.state;
+      if (s === "complete" || s === "partial") setPhase("done");
+      else if (s === "failed") setPhase("failed");
+      else setPhase("running");
+    };
+    browser.runtime.onMessage.addListener(handler);
+    return () => browser.runtime.onMessage.removeListener(handler);
+  }, []);
+
+  const start = useCallback((platform: "claude" | "chatgpt" = "claude") => {
+    if (phase === "starting" || phase === "running") return;
+    setPhase("starting");
+    browser.runtime.sendMessage({ kind: "start_backfill", platform })
+      .then((resp: unknown) => {
+        const r = resp as { ok?: boolean } | undefined;
+        if (!r?.ok) { setPhase("failed"); return; }
+        setPhase("running");
+      })
+      .catch(() => setPhase("failed"));
+  }, [phase]);
+
+  const canStart = phase === "idle" || phase === "done" || phase === "failed";
+  const isActive = phase === "starting" || phase === "running";
+  const pct = progress?.total_known && progress.total_known > 0
+    ? Math.round((progress.total_fetched / progress.total_known) * 100)
+    : null;
+  const embedPct = embed && embed.total > 0
+    ? Math.round((embed.embedded / embed.total) * 100)
+    : null;
+
+  return (
+    <div>
+      <div className="smallcaps" style={{ marginBottom: 8 }}>Backfill &amp; index</div>
+
+      <div style={{ display: "flex", gap: 6, marginBottom: 4 }}>
+        {(["claude", "chatgpt"] as const).map((p) => (
+          <button
+            key={p}
+            onClick={() => start(p)}
+            disabled={!canStart}
+            style={{
+              flex: 1,
+              padding: "7px 6px",
+              fontSize: 11,
+              background: canStart ? "var(--accent)" : "var(--surface-2)",
+              color: canStart ? "#f6f0e3" : "var(--muted)",
+              border: "none",
+              borderRadius: 3,
+              cursor: canStart ? "pointer" : "default",
+              fontWeight: 600,
+              letterSpacing: "0.02em",
+              fontFamily: "var(--sans)",
+            }}
+          >
+            {isActive && progress?.platform === p
+              ? "Running…"
+              : phase === "starting"
+              ? "Starting…"
+              : `Import ${p === "claude" ? "Claude" : "ChatGPT"}`}
+          </button>
+        ))}
+      </div>
+
+      {isActive && progress && (
+        <div style={{ marginTop: 8, fontSize: 11, color: "var(--muted)" }}>
+          {progress.state === "discovering" && <div>Discovering conversations…</div>}
+          {progress.state === "fetching" && (
+            <div>{progress.total_fetched}{progress.total_known ? ` / ${progress.total_known}` : ""} fetched</div>
+          )}
+          {progress.state === "rate_limited" && <div style={{ color: "var(--accent)" }}>Rate limited — pausing…</div>}
+          {pct !== null && (
+            <div style={{ background: "var(--surface-2)", borderRadius: 3, height: 4, marginTop: 5, overflow: "hidden" }}>
+              <div style={{ width: `${pct}%`, height: "100%", background: "var(--accent)", transition: "width 0.5s ease" }} />
+            </div>
+          )}
+        </div>
+      )}
+
+      {phase === "done" && progress && (
+        <div style={{ marginTop: 8, fontSize: 11, color: "var(--muted)", fontStyle: "italic" }}>
+          {progress.state === "complete" ? "Last import complete ✓" : "Last import partial"}
+        </div>
+      )}
+
+      {phase === "failed" && (
+        <div style={{ marginTop: 8, fontSize: 11, color: "var(--accent)", fontStyle: "italic" }}>
+          Last import failed. Click to retry.
+        </div>
+      )}
+
+      {/* Semantic index progress — always visible if we have data */}
+      {embed && embed.total > 0 && (
+        <div style={{ marginTop: 14 }}>
+          <div style={{
+            display: "flex",
+            justifyContent: "space-between",
+            fontSize: 10.5,
+            color: "var(--muted)",
+            marginBottom: 4,
+          }}>
+            <span>Semantic index</span>
+            <span className="mono">
+              {embed.embedded} / {embed.total}
+              {embed.pending === 0 ? " ✓" : ""}
+            </span>
+          </div>
+          <div style={{ background: "var(--surface-2)", borderRadius: 3, height: 3, overflow: "hidden" }}>
+            <div style={{
+              width: `${embedPct ?? 0}%`,
+              height: "100%",
+              background: embed.pending === 0 ? "var(--provider-chatgpt)" : "var(--provider-gemini)",
+              transition: "width 0.6s ease",
+            }} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── ResultsView ────────────────────────────────────────────────────────────
+// Hybrid search results, grouped by conversation. Mini-spine alongside each
+// conversation's hits to show where in the thread the matches fall.
+
+function ResultsView({
+  query,
+  results,
+  onPick,
+}: {
+  query: string;
+  results: SearchHit[];
+  onPick: (hit: SearchHit) => void;
+}) {
+  // Group hits by conversation (current search returns one per conv, but the
+  // shape supports multiple; the UI handles either).
+  const byConv = useMemo(() => {
+    const m = new Map<string, SearchHit[]>();
+    for (const r of results) {
+      const a = m.get(r.conversation_id) ?? [];
+      a.push(r);
+      m.set(r.conversation_id, a);
+    }
+    return m;
+  }, [results]);
+
+  if (results.length === 0) {
+    return (
+      <div style={{ padding: "60px 40px", color: "var(--muted)" }}>
+        <div className="serif" style={{ fontSize: 18, marginBottom: 8 }}>
+          No matches for “{query}”.
+        </div>
+        <div style={{ fontSize: 13 }}>
+          Try a vaguer phrase — semantic recall catches paraphrase.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="scroll" style={{ flex: 1, overflow: "auto", padding: "16px 28px 60px" }}>
+      <div style={{
+        display: "flex",
+        alignItems: "baseline",
+        justifyContent: "space-between",
+        padding: "4px 0 14px",
+      }}>
+        <div className="serif" style={{ fontSize: 14, color: "var(--muted)" }}>
+          <span style={{ color: "var(--ink-2)" }}>{results.length}</span> matches across{" "}
+          <span style={{ color: "var(--ink-2)" }}>{byConv.size}</span> conversation{byConv.size === 1 ? "" : "s"}{" "}
+          for <span className="serif" style={{ color: "var(--ink)", fontStyle: "italic" }}>“{query}”</span>
+        </div>
+        <div style={{ display: "flex", gap: 12, fontSize: 11, color: "var(--muted)" }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+            <span style={{ width: 8, height: 2, background: "var(--ink-2)" }} />
+            keyword (FTS5)
+          </span>
+          <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+            <span style={{ width: 8, height: 2, background: "var(--accent)" }} />
+            semantic
+          </span>
+          <span>· fused via RRF</span>
+        </div>
+      </div>
+
+      {[...byConv.entries()].map(([convId, rs]) => {
+        const first = rs[0]!;
+        return (
+          <ResultGroup key={convId} hits={rs} primary={first} onPick={onPick} />
+        );
+      })}
+    </div>
+  );
+}
+
+function ResultGroup({
+  hits,
+  primary,
+  onPick,
+}: {
+  hits: SearchHit[];
+  primary: SearchHit;
+  onPick: (h: SearchHit) => void;
+}) {
+  const [convMsgs, setConvMsgs] = useState<ConversationMessageRow[]>([]);
+  // Lazily fetch conversation messages so we can render the mini-spine
+  // and give the user a sense of where the hit sits.
+  useEffect(() => {
+    sendToHelper({ type: "get_conversation", conversation_id: primary.conversation_id })
+      .then((r) => {
+        if (r.ok && r.type === "get_conversation") setConvMsgs(r.messages);
+      })
+      .catch(() => {});
+  }, [primary.conversation_id]);
+
+  return (
+    <div style={{ marginBottom: 22, paddingBottom: 18, borderBottom: "1px solid var(--hairline)" }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 10 }}>
+        <div className="serif" style={{ fontSize: 17, fontWeight: 600, color: "var(--ink)", flex: 1 }}>
+          {primary.title ?? "(untitled)"}
+        </div>
+        <ProviderChip id={primary.platform} />
+        <span className="mono" style={{ fontSize: 10.5, color: "var(--muted)" }}>
+          {convMsgs.length || "…"} msgs
+        </span>
+      </div>
+      <div style={{ display: "flex", gap: 18 }}>
+        <MiniSpine
+          messages={convMsgs}
+          hitMessageId={primary.message_id}
+          width={42}
+          height={Math.max(40, convMsgs.length * 2)}
+        />
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
+          {hits.map((r) => (
+            <ResultRow key={r.message_id} r={r} onClick={() => onPick(r)} />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ResultRow({ r, onClick }: { r: SearchHit; onClick: () => void }) {
+  const { text, terms } = parseFtsSnippet(r.snippet);
+  const snippet = makeSnippet(text, terms, 220);
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        background: "transparent",
+        border: "none",
+        padding: "8px 10px",
+        margin: "0 -10px",
+        borderRadius: 4,
+        textAlign: "left",
+        cursor: "pointer",
+        display: "flex",
+        flexDirection: "column",
+        gap: 4,
+        color: "var(--ink-2)",
+        transition: "background 0.12s",
+      }}
+      onMouseOver={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
+      onMouseOut={(e) => (e.currentTarget.style.background = "transparent")}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 10.5, color: "var(--muted)" }}>
+        <span style={{
+          width: 8,
+          height: 2,
+          background: r.match === "vec" ? "var(--accent)" : r.match === "hybrid" ? "var(--accent-soft)" : "var(--ink-2)",
+          flex: "0 0 8px",
+        }} />
+        <span className="smallcaps" style={{ fontSize: 10, letterSpacing: "0.08em" }}>
+          {r.match === "vec" ? "Semantic" : r.match === "hybrid" ? "Keyword + Semantic" : "Keyword"}
+        </span>
+        <span>·</span>
+        <span className="mono">score {r.score.toFixed(3)}</span>
+      </div>
+      <div className="serif" style={{ fontSize: 13.5, lineHeight: 1.5, color: "var(--ink-2)" }}>
+        {highlightTerms(snippet, terms)}
+      </div>
+    </button>
+  );
+}
+
+// ─── ConversationView ───────────────────────────────────────────────────────
+
+function ConversationView({
+  convId,
+  msgIdAnchor,
+  initialQuery,
+  onConvDataLoaded,
+  registerJumpTo,
+  registerActive,
+}: {
+  convId: string;
+  msgIdAnchor: string | undefined;
+  initialQuery: string | undefined;
+  onConvDataLoaded: (data: {
+    meta: ConversationMeta | null;
+    messages: ConversationMessageRow[];
+    chapterMap: ChapterMap;
+  }) => void;
+  registerJumpTo: (jump: (idx: number, withPulse?: boolean) => void) => void;
+  registerActive: (idx: number) => void;
+}) {
+  const [meta, setMeta] = useState<ConversationMeta | null>(null);
+  const [messages, setMessages] = useState<ConversationMessageRow[]>([]);
+  const [segments, setSegments] = useState<OutlineSegment[]>([]);
+  const [outlineReady, setOutlineReady] = useState<boolean | null>(null);
+  const [err, setErr] = useState("");
+  const [filter, setFilter] = useState("");
+  const [activeIdx, setActiveIdx] = useState(0);
+  const [pulseIdx, setPulseIdx] = useState<number | null>(null);
+
+  const messagesRef = useRef<HTMLDivElement | null>(null);
+  const messageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+
+  // Load messages + meta when conv changes.
+  useEffect(() => {
+    setMeta(null);
+    setMessages([]);
+    setSegments([]);
+    setOutlineReady(null);
+    setFilter("");
+    setActiveIdx(0);
+    setErr("");
+    messageRefs.current.clear();
+
+    sendToHelper({ type: "get_conversation", conversation_id: convId })
+      .then((r) => {
+        if (r.ok && r.type === "get_conversation") {
+          setMeta(r.meta);
+          setMessages(r.messages);
+        }
+      })
+      .catch((e) => setErr(String(e)));
+    sendToHelper({ type: "get_outline", conversation_id: convId })
+      .then((r) => {
+        if (r.ok && r.type === "get_outline") {
+          setSegments(r.segments);
+          setOutlineReady(r.ready);
+        }
+      })
+      .catch(() => {});
+  }, [convId]);
+
+  const chapterMap = useMemo(() => buildChapterMap(messages, segments), [messages, segments]);
+
+  // Notify parent (so it can render right rail).
+  useEffect(() => {
+    onConvDataLoaded({ meta, messages, chapterMap });
+  }, [meta, messages, chapterMap, onConvDataLoaded]);
+
+  // Filter logic
+  const filterTokens = useMemo(() => tokenize(filter), [filter]);
+  const filterMatches = useMemo(() => {
+    if (!filter.trim()) return null;
+    const s = new Set<number>();
+    for (let i = 0; i < messages.length; i++) {
+      const lower = messages[i]!.content_text.toLowerCase();
+      if (filterTokens.every((t) => lower.includes(t))) s.add(i);
+    }
+    return s;
+  }, [filter, filterTokens, messages]);
+
+  // Pulse cleanup
+  useEffect(() => {
+    if (pulseIdx === null) return;
+    const t = setTimeout(() => setPulseIdx(null), 2400);
+    return () => clearTimeout(t);
+  }, [pulseIdx]);
+
+  const jumpTo = useCallback((idx: number, withPulse = true) => {
+    const el = messageRefs.current.get(idx);
+    const scrollEl = messagesRef.current;
+    if (el && scrollEl) {
+      scrollEl.scrollTo({ top: el.offsetTop - 80, behavior: "smooth" });
+    }
+    setActiveIdx(idx);
+    if (withPulse) setPulseIdx(idx);
+  }, []);
+
+  // Register imperative API for parent (right rail).
+  useEffect(() => {
+    registerJumpTo(jumpTo);
+  }, [jumpTo, registerJumpTo]);
+  useEffect(() => {
+    registerActive(activeIdx);
+  }, [activeIdx, registerActive]);
+
+  // Auto-jump on deep-link.
+  useEffect(() => {
+    if (!msgIdAnchor || messages.length === 0) return;
+    const idx = messages.findIndex((m) => m.id === msgIdAnchor);
+    if (idx >= 0) {
+      const t = setTimeout(() => jumpTo(idx, true), 80);
+      return () => clearTimeout(t);
+    }
+    return;
+  }, [msgIdAnchor, messages, jumpTo]);
+
+  // Track active message via scroll position.
+  const onScroll = useCallback(() => {
+    const scrollEl = messagesRef.current;
+    if (!scrollEl) return;
+    const top = scrollEl.scrollTop + 120;
+    let best = 0;
+    messageRefs.current.forEach((el, idx) => {
+      if (el.offsetTop <= top) best = idx;
+    });
+    setActiveIdx(best);
+  }, []);
+
+  if (err) {
+    return <div style={{ padding: 40, color: "var(--accent)" }}>{err}</div>;
+  }
+
+  return (
+    <>
+      {/* Conversation header */}
+      <div style={{
+        padding: "20px 36px 16px",
+        borderBottom: "1px solid var(--hairline)",
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+      }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+          {meta && <ProviderChip id={meta.platform} />}
+          <span className="mono" style={{ fontSize: 11, color: "var(--muted)" }}>
+            {meta?.last_message_at ? new Date(meta.last_message_at).toLocaleDateString() : ""}
+          </span>
+          <span className="mono" style={{ fontSize: 11, color: "var(--muted)" }}>
+            {messages.length} messages
+          </span>
+          <span className="mono" style={{ fontSize: 11, color: "var(--muted)" }}>
+            {chapterMap.chapters.length} chapter{chapterMap.chapters.length === 1 ? "" : "s"}
+          </span>
+          <div style={{ flex: 1 }} />
+          {meta?.url && /^https?:/.test(meta.url) && (
+            <a href={meta.url} target="_blank" rel="noopener" className="pill mono"
+              style={{ fontSize: 10.5, padding: "2px 7px", textDecoration: "none" }}>
+              ↗ original
+            </a>
+          )}
+        </div>
+        <div className="serif" style={{
+          fontSize: 24,
+          fontWeight: 600,
+          lineHeight: 1.2,
+          letterSpacing: "-0.01em",
+        }}>
+          {meta?.title ?? "Loading…"}
+        </div>
+        {/* In-conversation filter */}
+        <div style={{
+          marginTop: 8,
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "5px 10px",
+          border: "1px solid var(--hairline-strong)",
+          borderRadius: 4,
+          background: "var(--surface)",
+        }}>
+          <svg width="11" height="11" viewBox="0 0 16 16" fill="none" style={{ color: "var(--muted)" }}>
+            <path d="M2 3h12M4 8h8M6 13h4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+          </svg>
+          <input
+            type="text"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter messages inside this conversation…"
+            style={{
+              flex: 1,
+              border: "none",
+              background: "transparent",
+              outline: "none",
+              fontSize: 12.5,
+            }}
+          />
+          {filter && (
+            <>
+              <span className="mono" style={{ fontSize: 10.5, color: "var(--muted)" }}>
+                {filterMatches?.size ?? 0} / {messages.length}
+              </span>
+              <button
+                type="button"
+                onClick={() => setFilter("")}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: "var(--muted)",
+                  cursor: "pointer",
+                  fontSize: 14,
+                  padding: 0,
+                  width: 16,
+                  height: 16,
+                }}
+              >×</button>
+            </>
+          )}
+        </div>
+        {outlineReady === false && (
+          <div style={{ fontSize: 11, color: "var(--muted)", fontStyle: "italic", marginTop: 4 }}>
+            Indexing still in progress — outline will refine as embeddings finish.
+          </div>
+        )}
+      </div>
+
+      {/* Messages */}
+      <div
+        ref={messagesRef}
+        onScroll={onScroll}
+        className="scroll"
+        style={{ flex: 1, overflow: "auto", padding: "12px 0" }}
+      >
+        {chapterMap.chapters.map((ch, ci) => {
+          const msgs = messages
+            .map((m, idx) => ({ m, idx }))
+            .filter(({ idx }) => chapterMap.msgChapter[idx] === ci);
+          const visible = filter.trim()
+            ? msgs.filter(({ idx }) => filterMatches?.has(idx))
+            : msgs;
+          if (filter.trim() && visible.length === 0) return null;
+          return (
+            <div key={ci}>
+              <div style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+                padding: "20px 36px 8px",
+              }}>
+                <span className="mono" style={{ fontSize: 10.5, color: "var(--muted-2)" }}>
+                  Ch {String(ci + 1).padStart(2, "0")}
+                </span>
+                <div style={{ flex: 1, height: 1, background: "var(--hairline)" }} />
+                <span className="serif" style={{
+                  fontSize: 13.5,
+                  fontStyle: "italic",
+                  color: "var(--muted)",
+                  maxWidth: 460,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}>
+                  {ch.title}
+                </span>
+                <div style={{ flex: 1, height: 1, background: "var(--hairline)" }} />
+              </div>
+              {visible.map(({ m, idx }) => (
+                <MessageBlock
+                  key={m.id}
+                  m={m}
+                  idx={idx}
+                  isPulse={pulseIdx === idx}
+                  highlightTerms={filter.trim() ? filterTokens : (initialQuery ? tokenize(initialQuery) : [])}
+                  setRef={(el) => {
+                    if (el) messageRefs.current.set(idx, el);
+                    else messageRefs.current.delete(idx);
+                  }}
+                />
+              ))}
+            </div>
+          );
+        })}
+        {filter.trim() && filterMatches?.size === 0 && (
+          <div style={{ padding: "60px 40px", color: "var(--muted)", fontStyle: "italic" }}>
+            No messages match “{filter}” in this conversation.
+          </div>
+        )}
+        <div style={{ height: 200 }} />
+      </div>
+    </>
+  );
+}
+
+function MessageBlock({
+  m,
+  idx,
+  isPulse,
+  highlightTerms,
+  setRef,
+}: {
+  m: ConversationMessageRow;
+  idx: number;
+  isPulse: boolean;
+  highlightTerms: string[];
+  setRef: (el: HTMLDivElement | null) => void;
+}) {
+  const isUser = m.role === "user";
+  return (
+    <div
+      ref={setRef}
+      className={isPulse ? "pulse-target" : ""}
+      style={{
+        padding: "12px 36px 16px",
+        borderRadius: 2,
+        scrollMarginTop: 80,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 6 }}>
+        <span className="smallcaps" style={{
+          color: isUser ? "var(--ink-2)" : "var(--muted)",
+          fontWeight: 600,
+        }}>
+          {isUser ? "You" : "Assistant"}
+        </span>
+        <span className="mono" style={{ fontSize: 10.5, color: "var(--muted-2)" }}>
+          #{String(idx + 1).padStart(2, "0")}
+        </span>
+        {m.created_at && (
+          <span className="mono" style={{ fontSize: 10.5, color: "var(--muted-2)" }}>
+            {new Date(m.created_at).toLocaleString()}
+          </span>
+        )}
+      </div>
+      <div style={{
+        fontSize: 14,
+        lineHeight: 1.62,
+        color: isUser ? "var(--ink)" : "var(--ink-2)",
+        maxWidth: 720,
+      }}>
+        <MessageBody text={m.content_text} terms={highlightTerms} />
+      </div>
+    </div>
+  );
+}
+
+// ─── RightRail (outline) ────────────────────────────────────────────────────
+
+function RightRail({
+  conv,
+  activeIdx,
+  pulseIdx,
+  filterMatches,
+  onJump,
+  hidden,
+}: {
+  conv: { messages: ConversationMessageRow[]; chapterMap: ChapterMap } | null;
+  activeIdx: number;
+  pulseIdx: number | null;
+  filterMatches: Set<number> | null;
+  onJump: (idx: number) => void;
+  hidden: boolean;
+}) {
+  if (hidden || !conv || conv.messages.length === 0) {
+    return (
+      <div style={{
+        width: 60,
+        flex: "0 0 60px",
+        background: "var(--bg)",
+        borderLeft: "1px solid var(--hairline)",
+      }} />
+    );
+  }
+  return (
+    <div style={{
+      width: 290,
+      flex: "0 0 290px",
+      background: "var(--bg)",
+      display: "flex",
+      flexDirection: "column",
+      overflow: "hidden",
+      borderLeft: "1px solid var(--hairline)",
+    }}>
+      <div style={{
+        padding: "14px 18px 8px 20px",
+        display: "flex",
+        alignItems: "baseline",
+        justifyContent: "space-between",
+        borderBottom: "1px solid var(--hairline)",
+      }}>
+        <div className="smallcaps">Outline</div>
+        <div className="mono" style={{ fontSize: 10, color: "var(--muted-2)" }}>
+          #{String(activeIdx + 1).padStart(2, "0")} / {conv.messages.length}
+        </div>
+      </div>
+      <div className="scroll" style={{ flex: 1, overflow: "auto", padding: "0 18px 24px 20px" }}>
+        <ConversationSpine
+          messages={conv.messages}
+          chapterMap={conv.chapterMap}
+          activeIdx={activeIdx}
+          pulseIdx={pulseIdx}
+          filterMatches={filterMatches}
+          onJump={onJump}
+        />
+        <div style={{ marginTop: 18, paddingTop: 16, borderTop: "1px solid var(--hairline)" }}>
+          <div className="smallcaps" style={{ marginBottom: 6 }}>Legend</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: "var(--muted)" }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ width: 24, height: 4, background: "var(--ink-2)" }} />
+              you
+            </span>
+            <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ width: 24, height: 3, background: "var(--muted-2)" }} />
+              assistant
+            </span>
+            <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ width: 24, height: 4, background: "var(--accent)" }} />
+              current position
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── HomeWelcome ────────────────────────────────────────────────────────────
+
+function HomeWelcome({ recents, onPick }: { recents: RecentConversation[]; onPick: (id: string) => void }) {
+  if (recents.length === 0) {
+    return (
+      <div style={{ padding: "64px 40px", maxWidth: 600, display: "flex", flexDirection: "column", gap: 0 }}>
+        <div className="serif" style={{ fontSize: 28, fontWeight: 600, marginBottom: 12 }}>
+          Your archive is empty.
+        </div>
+        <p style={{ color: "var(--muted)", fontSize: 14, fontStyle: "italic", margin: "0 0 28px" }}>
+          Smriti captures conversations as you chat. Open one of the sites below and
+          start a conversation — it'll appear here automatically.
+        </p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {[
+            { href: "https://claude.ai/new", label: "Open Claude.ai", color: "#d97706" },
+            { href: "https://chatgpt.com/", label: "Open ChatGPT", color: "#19c37d" },
+            { href: "https://gemini.google.com/app", label: "Open Gemini", color: "#4285F4" },
+          ].map((s) => (
+            <a key={s.href} href={s.href} target="_blank" rel="noopener" style={{
+              display: "flex", alignItems: "center", gap: 12,
+              padding: "12px 16px",
+              background: "var(--surface)", border: "1px solid var(--hairline)",
+              borderRadius: 6, textDecoration: "none", color: "var(--ink)",
+            }}>
+              <div style={{ width: 8, height: 8, borderRadius: 4, background: s.color, flexShrink: 0 }} />
+              <span style={{ fontSize: 14, fontWeight: 500 }}>{s.label}</span>
+              <span style={{ marginLeft: "auto", color: "var(--muted)", fontSize: 12 }}>↗</span>
+            </a>
+          ))}
+        </div>
+        <p style={{ color: "var(--muted)", fontSize: 12, marginTop: 20, fontStyle: "italic" }}>
+          Or import your history from Settings → Backfill.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ padding: "48px 40px", maxWidth: 720 }}>
+      <div className="serif" style={{ fontSize: 28, fontWeight: 600, marginBottom: 10 }}>
+        Your local archive.
+      </div>
+      <p style={{ color: "var(--muted)", fontSize: 14, fontStyle: "italic", marginTop: 0, marginBottom: 26 }}>
+        Everything you've discussed with Claude, ChatGPT, Gemini, and Claude Code — searchable, indexed, and outlined.
+        Start by typing in the search bar above, or pick a recent conversation.
+      </p>
+      <div className="smallcaps" style={{ marginBottom: 10 }}>Recent</div>
+      <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+        {recents.slice(0, 8).map((c) => (
+          <li key={c.id}>
+            <button
+              type="button"
+              onClick={() => onPick(c.id)}
+              style={{
+                width: "100%",
+                background: "transparent",
+                border: "none",
+                borderBottom: "1px solid var(--hairline)",
+                padding: "10px 4px",
+                textAlign: "left",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+            >
+              <ProviderChip id={c.platform} dim />
+              <span className="serif" style={{
+                fontSize: 14,
+                fontWeight: 500,
+                color: "var(--ink)",
+                flex: 1,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}>{c.title ?? "(untitled)"}</span>
+              <span className="mono" style={{ fontSize: 11, color: "var(--muted)" }}>{c.message_count} msgs</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// ─── Onboarding ──────────────────────────────────────────────────────────────
+// Shown only on first run. In the new architecture there is no helper to
+// install — everything runs inside the extension. The onboarding wizard now
+// just introduces the product and offers to kick off a Claude backfill.
+
+// Kept as a stub so references in App don't need changing.
+type HelperState = "checking" | "ok" | "missing";
+
+function useHelperState(): HelperState {
+  // Offscreen document is always available — always report "ok".
+  return "ok";
+}
+
+const ONBOARDED_KEY = "smriti:onboarded";
+
+function detectOS(): "windows" | "macos" | "linux" {
+  const ua = navigator.userAgent.toLowerCase();
+  if (ua.includes("mac")) return "macos";
+  if (ua.includes("linux")) return "linux";
+  return "windows";
+}
+
+function Onboarding({ helperState, onDone }: { helperState: HelperState; onDone: () => void }) {
+  const [step, setStep] = useState<1 | 2 | 3>(helperState === "ok" ? 3 : 1);
+  const os = detectOS();
+  const extId = chrome.runtime.id;
+
+  useEffect(() => {
+    if (helperState === "ok" && step === 2) setStep(3);
+  }, [helperState, step]);
+
+  return (
+    <div style={{
+      width: "100%",
+      height: "100vh",
+      display: "flex",
+      flexDirection: "column",
+      background: "var(--bg)",
+      color: "var(--ink)",
+      overflow: "auto",
+    }} className="scroll">
+      <div style={{ maxWidth: 720, margin: "0 auto", padding: "60px 32px 80px", width: "100%" }}>
+        {/* Brand row */}
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 32 }}>
+          <div style={{
+            width: 36, height: 36, borderRadius: 6,
+            background: "var(--accent)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            color: "#f6f0e3", fontFamily: "var(--serif)", fontSize: 18, fontWeight: 700,
+          }}>स</div>
+          <div>
+            <div className="serif" style={{ fontSize: 22, fontWeight: 600, lineHeight: 1, letterSpacing: "-0.01em" }}>Smriti</div>
+            <div className="smallcaps" style={{ marginTop: 4 }}>your AI memory · स्मृति</div>
+          </div>
+        </div>
+
+        {/* Step dots */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 30 }}>
+          {[1, 2, 3].map((i) => (
+            <div key={i} style={{
+              width: 24, height: 3, borderRadius: 2,
+              background: i <= step ? "var(--accent)" : "var(--hairline)",
+              transition: "background 0.2s",
+            }} />
+          ))}
+        </div>
+
+        {step === 1 && <OnboardingStep1 onNext={() => setStep(2)} />}
+        {step === 2 && <OnboardingStep2 os={os} extId={extId} helperState={helperState} onNext={() => setStep(3)} />}
+        {step === 3 && <OnboardingStep3 onDone={onDone} />}
+      </div>
+    </div>
+  );
+}
+
+function OnboardingStep1({ onNext }: { onNext: () => void }) {
+  return (
+    <div>
+      <h1 className="serif" style={{ fontSize: 30, fontWeight: 600, lineHeight: 1.15, letterSpacing: "-0.01em", margin: "0 0 12px" }}>
+        Your AI conversations, indexed and searchable across every tool.
+      </h1>
+      <p style={{ fontSize: 15, color: "var(--ink-2)", lineHeight: 1.6, margin: "0 0 24px", maxWidth: 580 }}>
+        Smriti quietly archives every message you send and receive on Claude, ChatGPT,
+        Gemini, and Claude Code — then makes it searchable from anywhere, with hybrid
+        keyword + semantic recall and an auto-generated outline for any long chat.
+      </p>
+      <ul style={{ listStyle: "none", padding: 0, marginBottom: 28, display: "flex", flexDirection: "column", gap: 10 }}>
+        {[
+          { t: "Pinpoint past discussions", d: "Find that specific exchange from 3 weeks ago — even if you only vaguely remember it." },
+          { t: "100% local", d: "Your conversations never leave your machine. No cloud, no accounts, no telemetry." },
+          { t: "Lives where you work", d: "A sidebar inside claude.ai/chatgpt.com/gemini surfaces past relevant chats as you type." },
+        ].map((row) => (
+          <li key={row.t} style={{ display: "flex", gap: 12 }}>
+            <div style={{ flex: "0 0 10px", marginTop: 8, width: 10, height: 2, background: "var(--accent)" }} />
+            <div>
+              <div className="serif" style={{ fontSize: 16, fontWeight: 600, color: "var(--ink)" }}>{row.t}</div>
+              <div style={{ fontSize: 13.5, color: "var(--muted)", lineHeight: 1.5 }}>{row.d}</div>
+            </div>
+          </li>
+        ))}
+      </ul>
+      <PrimaryButton onClick={onNext}>Let's set it up →</PrimaryButton>
+    </div>
+  );
+}
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function OnboardingStep2({ os: _os, extId: _extId, helperState: _helperState, onNext }: { os: ReturnType<typeof detectOS>; extId: string; helperState: HelperState; onNext: () => void }) {
+  const sites = [
+    { label: "claude.ai", color: "var(--provider-claude, #d97706)", initial: "C" },
+    { label: "chatgpt.com", color: "var(--provider-chatgpt, #19c37d)", initial: "G" },
+    { label: "gemini.google.com", color: "#4285F4", initial: "G" },
+  ];
+
+  return (
+    <div>
+      <h1 className="serif" style={{ fontSize: 26, fontWeight: 600, lineHeight: 1.2, letterSpacing: "-0.01em", margin: "0 0 8px" }}>
+        Capture is already running
+      </h1>
+      <p style={{ fontSize: 14, color: "var(--muted)", margin: "0 0 22px", fontStyle: "italic" }}>
+        No setup required. Everything runs inside the browser — no installs, no scripts.
+      </p>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 28 }}>
+        {sites.map((s) => (
+          <div key={s.label} style={{
+            display: "flex", alignItems: "center", gap: 12,
+            background: "var(--surface)", border: "1px solid var(--hairline)",
+            borderRadius: 6, padding: "10px 14px",
+          }}>
+            <div style={{
+              width: 26, height: 26, borderRadius: 13,
+              background: s.color,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              color: "#fff", fontSize: 11, fontWeight: 700, flexShrink: 0,
+            }}>{s.initial}</div>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 600, color: "var(--ink)" }}>{s.label}</div>
+              <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>
+                Messages captured automatically as you chat
+              </div>
+            </div>
+            <div style={{ marginLeft: "auto", fontSize: 11, color: "var(--provider-chatgpt, #19c37d)", fontWeight: 700 }}>● live</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{
+        background: "var(--surface)", border: "1px solid var(--hairline)",
+        borderRadius: 6, padding: "12px 16px", marginBottom: 24,
+        fontSize: 13, color: "var(--ink-2)", lineHeight: 1.6,
+      }}>
+        <strong style={{ color: "var(--ink)" }}>100% local.</strong>{" "}
+        Your conversations are stored in an encrypted SQLite database inside the browser's private
+        storage — they never leave your device.
+      </div>
+
+      <PrimaryButton onClick={onNext}>Continue →</PrimaryButton>
+    </div>
+  );
+}
+
+function OnboardingStep3({ onDone }: { onDone: () => void }) {
+  const [importing, setImporting] = useState<Record<string, boolean>>({});
+
+  const startImport = (platform: "claude" | "chatgpt") => {
+    setImporting((prev) => ({ ...prev, [platform]: true }));
+    browser.runtime.sendMessage({ kind: "start_backfill", platform }).catch(() => {});
+  };
+
+  const importItems: Array<{
+    platform: "claude" | "chatgpt";
+    label: string;
+    desc: string;
+    color: string;
+  }> = [
+    { platform: "claude", label: "Import Claude.ai history", desc: "Pulls all past conversations from claude.ai using your browser session.", color: "#d97706" },
+    { platform: "chatgpt", label: "Import ChatGPT history", desc: "Pulls all past conversations from chatgpt.com using your browser session.", color: "#19c37d" },
+  ];
+
+  return (
+    <div>
+      <h1 className="serif" style={{ fontSize: 26, fontWeight: 600, lineHeight: 1.2, letterSpacing: "-0.01em", margin: "0 0 8px" }}>
+        You're all set.
+      </h1>
+      <p style={{ fontSize: 14, color: "var(--muted)", margin: "0 0 22px", fontStyle: "italic" }}>
+        Smriti is capturing every new message live. Optionally import your history:
+      </p>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 28 }}>
+        {importItems.map((item) => (
+          <div key={item.platform} style={{
+            padding: "16px 18px",
+            background: "var(--surface)",
+            border: "1px solid var(--hairline)",
+            borderRadius: 6,
+            display: "flex", alignItems: "center", gap: 14,
+          }}>
+            <div style={{
+              width: 10, height: 10, borderRadius: 5,
+              background: item.color, flexShrink: 0,
+            }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 3 }}>
+                {item.label}
+              </div>
+              <div style={{ fontSize: 12, color: "var(--muted)" }}>{item.desc}</div>
+            </div>
+            <button
+              onClick={() => startImport(item.platform)}
+              disabled={!!importing[item.platform]}
+              style={{
+                background: importing[item.platform] ? "var(--surface-2)" : "var(--accent)",
+                color: importing[item.platform] ? "var(--muted)" : "#f6f0e3",
+                border: "none", borderRadius: 4, padding: "7px 14px",
+                fontSize: 12, fontWeight: 600, cursor: importing[item.platform] ? "default" : "pointer",
+                whiteSpace: "nowrap", flexShrink: 0,
+              }}
+            >
+              {importing[item.platform] ? "Importing…" : "Start"}
+            </button>
+          </div>
+        ))}
+
+        <div style={{
+          padding: "14px 18px",
+          background: "var(--surface)", border: "1px dashed var(--hairline)", borderRadius: 6,
+        }}>
+          <div className="serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>
+            Try the in-page sidebar
+          </div>
+          <p style={{ fontSize: 13, color: "var(--muted)", margin: 0 }}>
+            Open{" "}
+            <a href="https://claude.ai" target="_blank" rel="noopener" style={{ color: "var(--accent)" }}>claude.ai</a>,{" "}
+            <a href="https://chatgpt.com" target="_blank" rel="noopener" style={{ color: "var(--accent)" }}>chatgpt.com</a>,{" "}
+            or{" "}
+            <a href="https://gemini.google.com" target="_blank" rel="noopener" style={{ color: "var(--accent)" }}>gemini.google.com</a>{" "}
+            and look for the Smriti tab on the right edge.
+          </p>
+        </div>
+      </div>
+
+      <PrimaryButton onClick={onDone}>Open the viewer →</PrimaryButton>
+    </div>
+  );
+}
+
+function PrimaryButton({ children, onClick, disabled }: { children: React.ReactNode; onClick: () => void; disabled?: boolean }) {
+  return (
+    <button onClick={onClick} disabled={disabled} style={{
+      background: disabled ? "var(--surface-2)" : "var(--accent)",
+      color: disabled ? "var(--muted)" : "#f6f0e3",
+      border: "none",
+      borderRadius: 4,
+      padding: "10px 18px",
+      fontSize: 13.5,
+      fontWeight: 600,
+      letterSpacing: "0.01em",
+      cursor: disabled ? "default" : "pointer",
+      fontFamily: "var(--sans)",
+    }}>{children}</button>
+  );
+}
+
+// ─── Settings ────────────────────────────────────────────────────────────────
+// Privacy controls. Critical for a privacy-positioned product — users need to
+// see what's captured and be able to delete / export / wipe at any time.
+
+function SettingsView({ totals, embed, nav }: {
+  totals: { conversations: number; messages: number };
+  embed: { total: number; embedded: number; pending: number } | null;
+  nav: (r: Route) => void;
+}) {
+  const [captureOff, setCaptureOff] = useState<Record<string, boolean>>({});
+  const [captureState, setCaptureState] = useState<Record<string, { last_seen_at: string | null; health: string }>>({});
+  const [wipeConfirm, setWipeConfirm] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [helperVersion, setHelperVersion] = useState<string>("");
+
+  // Read the real paused-hosts list from extension storage (the source of
+  // truth that background.ts enforces against).
+  useEffect(() => {
+    browser.storage.local.get("smriti:paused-hosts").then((o) => {
+      const list = o["smriti:paused-hosts"];
+      if (Array.isArray(list)) {
+        const next: Record<string, boolean> = {};
+        list.forEach((h: string) => { next[h] = true; });
+        setCaptureOff(next);
+      }
+    }).catch(() => {});
+    // In the new architecture, no separate helper binary — version is the extension version.
+    setHelperVersion(chrome.runtime.getManifest().version);
+
+    // Load live capture state from the DB.
+    sendToHelper({ type: "capture_state" })
+      .then((r) => {
+        const platforms = (r as { platforms?: Array<{ platform: string; last_seen_at: string | null; health: string }> }).platforms;
+        if (Array.isArray(platforms)) {
+          const next: Record<string, { last_seen_at: string | null; health: string }> = {};
+          for (const p of platforms) next[p.platform] = { last_seen_at: p.last_seen_at, health: p.health };
+          setCaptureState(next);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const toggleCapture = (host: string) => {
+    const next = { ...captureOff, [host]: !captureOff[host] };
+    setCaptureOff(next);
+    browser.runtime.sendMessage({ kind: "capture_toggle", host, off: next[host] }).catch(() => {});
+  };
+
+  const onExport = async () => {
+    setExporting(true);
+    try {
+      const recents = await sendToHelper({ type: "list_recent_conversations", limit: 10000 });
+      if (!recents.ok || recents.type !== "list_recent_conversations") return;
+      const archive: Array<{ meta: unknown; messages: unknown }> = [];
+      for (const c of recents.conversations) {
+        const conv = await sendToHelper({ type: "get_conversation", conversation_id: c.id });
+        if (conv.ok && conv.type === "get_conversation") {
+          archive.push({ meta: conv.meta, messages: conv.messages });
+        }
+      }
+      const blob = new Blob([JSON.stringify({ exported_at: new Date().toISOString(), conversations: archive }, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `smriti-archive-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const hosts: Array<{ id: string; label: string; platform: string }> = [
+    { id: "claude.ai",         label: "Claude.ai",  platform: "claude"   },
+    { id: "chatgpt.com",       label: "ChatGPT.com", platform: "chatgpt"  },
+    { id: "gemini.google.com", label: "Gemini",      platform: "gemini"   },
+  ];
+
+  return (
+    <div style={{ flex: 1, overflow: "auto", padding: "32px 40px 80px", maxWidth: 820, margin: "0 auto", width: "100%" }} className="scroll">
+      <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 18 }}>
+        <a href="#/" style={{ fontSize: 12, color: "var(--muted)", textDecoration: "none" }}>← Back</a>
+      </div>
+      <h1 className="serif" style={{ fontSize: 26, fontWeight: 600, margin: "0 0 4px" }}>Settings &amp; privacy</h1>
+      <p style={{ color: "var(--muted)", fontSize: 13, margin: "0 0 28px", fontStyle: "italic" }}>
+        Everything Smriti captures is stored locally on your machine. You're in full control.
+      </p>
+
+      {/* Capture toggles */}
+      <Section title="Capture">
+        <div style={{ color: "var(--muted)", fontSize: 12, marginBottom: 10 }}>
+          Toggle capture per site. Disabled sites won't have messages recorded.
+        </div>
+        {hosts.map((h) => {
+          const st = captureState[h.platform];
+          const lastSeen = st?.last_seen_at ? relativeTime(st.last_seen_at) : null;
+          return (
+            <SettingRow
+              key={h.id}
+              label={
+                <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  {h.label}
+                  {lastSeen && !captureOff[h.id] && (
+                    <span style={{
+                      fontSize: 10, fontWeight: 600,
+                      color: "var(--provider-chatgpt, #19c37d)",
+                      background: "rgba(25,195,125,0.1)",
+                      padding: "1px 6px", borderRadius: 10,
+                    }}>● {lastSeen}</span>
+                  )}
+                </span>
+              }
+              right={
+                <Toggle on={!captureOff[h.id]} onChange={() => toggleCapture(h.id)} />
+              }
+            />
+          );
+        })}
+      </Section>
+
+      {/* Local data */}
+      <Section title="Local data">
+        <SettingRow
+          label="Archive size"
+          right={<span className="mono" style={{ color: "var(--ink-2)" }}>{totals.conversations} conversations · {totals.messages} messages</span>}
+        />
+        <SettingRow
+          label="Semantic index"
+          right={
+            <span className="mono" style={{ color: "var(--ink-2)" }}>
+              {embed ? `${embed.embedded} / ${embed.total}${embed.pending === 0 ? " ✓" : " (indexing)"}` : "—"}
+            </span>
+          }
+        />
+        <SettingRow
+          label="Extension version"
+          right={<span className="mono" style={{ color: "var(--ink-2)" }}>{helperVersion || "—"}</span>}
+        />
+      </Section>
+
+      {/* Export */}
+      <Section title="Export">
+        <div style={{ color: "var(--muted)", fontSize: 12, marginBottom: 10 }}>
+          Download every conversation Smriti has captured as a single JSON file. Use it for backup
+          or to migrate to another tool.
+        </div>
+        <button onClick={onExport} disabled={exporting} style={{
+          background: "var(--surface)",
+          border: "1px solid var(--hairline-strong)",
+          borderRadius: 4,
+          padding: "8px 14px",
+          fontSize: 13,
+          fontFamily: "var(--sans)",
+          fontWeight: 500,
+          color: "var(--ink)",
+          cursor: exporting ? "default" : "pointer",
+        }}>{exporting ? "Exporting…" : "Export archive as JSON"}</button>
+      </Section>
+
+      {/* Wipe */}
+      <Section title="Danger zone" danger>
+        <div style={{ color: "var(--muted)", fontSize: 12, marginBottom: 10 }}>
+          Wipe deletes every captured message and conversation from the local database. The action is permanent.
+        </div>
+        {!wipeConfirm ? (
+          <button onClick={() => setWipeConfirm(true)} style={{
+            background: "transparent",
+            border: "1px solid var(--accent)",
+            color: "var(--accent)",
+            borderRadius: 4,
+            padding: "8px 14px",
+            fontSize: 13,
+            fontFamily: "var(--sans)",
+            fontWeight: 500,
+            cursor: "pointer",
+          }}>Wipe local archive</button>
+        ) : (
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => {
+              sendToHelper({ type: "wipe_archive" }).catch(() => {});
+              setWipeConfirm(false);
+              setTimeout(() => nav({ view: "home" }), 200);
+            }} style={{
+              background: "var(--accent)", color: "#f6f0e3",
+              border: "none", borderRadius: 4, padding: "8px 14px",
+              fontSize: 13, fontWeight: 600, cursor: "pointer",
+            }}>Yes — wipe everything</button>
+            <button onClick={() => setWipeConfirm(false)} style={{
+              background: "transparent", border: "1px solid var(--hairline-strong)",
+              color: "var(--ink-2)", borderRadius: 4, padding: "8px 14px",
+              fontSize: 13, cursor: "pointer",
+            }}>Cancel</button>
+          </div>
+        )}
+      </Section>
+
+      <p style={{ marginTop: 36, fontSize: 11, color: "var(--muted)", lineHeight: 1.6 }}>
+        Smriti stores everything in <code style={{ background: "var(--chip-bg)", padding: "1px 4px", borderRadius: 2 }}>%APPDATA%\Smriti\smriti.db</code>{" "}
+        (Windows) or <code style={{ background: "var(--chip-bg)", padding: "1px 4px", borderRadius: 2 }}>~/Library/Application Support/Smriti/smriti.db</code> (macOS).
+        Nothing is sent over the network except the requests Claude.ai / ChatGPT / Gemini already make from your browser.
+      </p>
+    </div>
+  );
+}
+
+function Section({ title, danger, children }: { title: string; danger?: boolean; children: React.ReactNode }) {
+  return (
+    <section style={{ marginBottom: 28 }}>
+      <h2 className="smallcaps" style={{
+        color: danger ? "var(--accent)" : "var(--muted)",
+        margin: "0 0 12px",
+        fontSize: 11,
+      }}>{title}</h2>
+      <div style={{
+        background: "var(--surface)",
+        border: `1px solid var(--hairline)`,
+        borderRadius: 6,
+        padding: "12px 16px",
+      }}>{children}</div>
+    </section>
+  );
+}
+
+function relativeTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  if (diff < 60_000) return "just now";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  return `${Math.floor(diff / 86_400_000)}d ago`;
+}
+
+function SettingRow({ label, right }: { label: React.ReactNode; right: React.ReactNode }) {
+  return (
+    <div style={{
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      padding: "8px 0",
+      borderBottom: "1px solid var(--hairline)",
+      fontSize: 13.5,
+    }}>
+      <span>{label}</span>
+      {right}
+    </div>
+  );
+}
+
+function Toggle({ on, onChange }: { on: boolean; onChange: () => void }) {
+  return (
+    <button onClick={onChange} aria-pressed={on} style={{
+      width: 36, height: 20, borderRadius: 10,
+      background: on ? "var(--accent)" : "var(--hairline-strong)",
+      border: "none", padding: 0, position: "relative", cursor: "pointer",
+      transition: "background 0.15s",
+    }}>
+      <span style={{
+        position: "absolute", top: 2, left: on ? 18 : 2,
+        width: 16, height: 16, borderRadius: "50%",
+        background: "#fff", transition: "left 0.15s",
+        boxShadow: "0 1px 2px rgba(0,0,0,0.2)",
+      }} />
+    </button>
+  );
+}
+
+// ─── App ─────────────────────────────────────────────────────────────────────
+
+function App() {
+  const [route, nav] = useRoute();
+  const [theme, cycleTheme] = useTheme();
+  const helperState = useHelperState();
+
+  // First-run flag — once user finishes onboarding we remember not to show it.
+  const [hasOnboarded, setHasOnboarded] = useState<boolean>(
+    () => localStorage.getItem(ONBOARDED_KEY) === "1",
+  );
+  const finishOnboarding = useCallback(() => {
+    localStorage.setItem(ONBOARDED_KEY, "1");
+    setHasOnboarded(true);
+    nav({ view: "home" });
+  }, [nav]);
+
+  // Force onboarding when:
+  //   - user explicitly visits #/welcome
+  //   - they've never finished onboarding
+  // (No longer gated on helper state — everything runs inside the extension.)
+  const needOnboarding =
+    route.view === "welcome" ||
+    !hasOnboarded;
+
+  const [recents, setRecents] = useState<RecentConversation[]>([]);
+  const [totals, setTotals] = useState({ conversations: 0, messages: 0 });
+  const [embed, setEmbed] = useState<{ total: number; embedded: number; pending: number } | null>(null);
+
+  // Global search state
+  const [query, setQuery] = useState<string>(route.q ?? "");
+  const [searching, setSearching] = useState(false);
+  const [results, setResults] = useState<SearchHit[]>([]);
+  const lastQuery = useRef("");
+
+  // Right-rail data shared with ConversationView
+  const [convData, setConvData] = useState<{ meta: ConversationMeta | null; messages: ConversationMessageRow[]; chapterMap: ChapterMap } | null>(null);
+  const [activeIdx, setActiveIdx] = useState(0);
+  const [pulseIdx] = useState<number | null>(null); // pulse comes from inside ConversationView; right rail just animates with msg refs
+  const [filterMatches] = useState<Set<number> | null>(null); // not piped through yet; can extend later
+  const jumpToRef = useRef<((idx: number, withPulse?: boolean) => void) | null>(null);
+
+  const onConvDataLoaded = useCallback((data: { meta: ConversationMeta | null; messages: ConversationMessageRow[]; chapterMap: ChapterMap }) => {
+    setConvData(data);
+  }, []);
+  const registerJumpTo = useCallback((jump: (idx: number, withPulse?: boolean) => void) => {
+    jumpToRef.current = jump;
+  }, []);
+  const registerActive = useCallback((idx: number) => {
+    setActiveIdx(idx);
+  }, []);
+
+  // Load recents + totals.
+  useEffect(() => {
+    const load = () => {
+      sendToHelper({ type: "list_recent_conversations", limit: 30 })
+        .then((r) => {
+          if (r.ok && r.type === "list_recent_conversations") setRecents(r.conversations);
+        })
+        .catch(() => {});
+      sendToHelper({ type: "stats" })
+        .then((r) => {
+          if (r.ok && r.type === "stats") setTotals({ conversations: r.conversations, messages: r.messages });
+        })
+        .catch(() => {});
+      sendToHelper({ type: "embed_status" })
+        .then((r) => {
+          if (r.ok && r.type === "embed_status") {
+            setEmbed({ total: r.total, embedded: r.embedded, pending: r.pending });
+          }
+        })
+        .catch(() => {});
+    };
+    load();
+    const t = setInterval(load, 8_000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Debounced search.
+  useEffect(() => {
+    const q = query.trim();
+    lastQuery.current = q;
+    if (!q) {
+      setResults([]);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    const t = setTimeout(() => {
+      sendToHelper({ type: "search", query: q, limit: 20 })
+        .then((r) => {
+          if (r.ok && r.type === "search" && lastQuery.current === q) {
+            setResults(r.results);
+          }
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (lastQuery.current === q) setSearching(false);
+        });
+    }, 280);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  // Sync route.q → query on hash change.
+  useEffect(() => {
+    if (route.q && route.q !== query) setQuery(route.q);
+    // intentional: only react to route changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [route.q]);
+
+  const onPickResult = useCallback((hit: SearchHit) => {
+    setQuery("");
+    nav({ view: "conversation", conversationId: hit.conversation_id, msgId: hit.message_id, q: lastQuery.current });
+  }, [nav]);
+
+  const onPickConv = useCallback((id: string) => {
+    nav({ view: "conversation", conversationId: id });
+  }, [nav]);
+
+  // Short-circuit: onboarding owns the entire viewport when needed.
+  if (needOnboarding) {
+    return <Onboarding helperState={helperState} onDone={finishOnboarding} />;
+  }
+
+  // Settings is also a full-page view.
+  if (route.view === "settings") {
+    return (
+      <div style={{
+        width: "100%", height: "100%",
+        display: "flex", flexDirection: "column",
+        background: "var(--bg)", color: "var(--ink)", overflow: "hidden",
+      }}>
+        <TopBar
+          query={query} setQuery={setQuery}
+          searching={searching} resultCount={results.length}
+          totals={totals} theme={theme} onCycleTheme={cycleTheme}
+          helperOk={helperState === "ok"}
+          onOpenSettings={() => nav({ view: "settings" })}
+        />
+        <SettingsView totals={totals} embed={embed} nav={nav} />
+      </div>
+    );
+  }
+
+  return (
+    <div style={{
+      width: "100%",
+      height: "100%",
+      display: "flex",
+      flexDirection: "column",
+      background: "var(--bg)",
+      color: "var(--ink)",
+      overflow: "hidden",
+    }}>
+      <TopBar
+        query={query}
+        setQuery={setQuery}
+        searching={searching}
+        resultCount={results.length}
+        totals={totals}
+        theme={theme}
+        onCycleTheme={cycleTheme}
+        helperOk={helperState === "ok"}
+        onOpenSettings={() => nav({ view: "settings" })}
+      />
+      <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+        <LeftRail
+          recents={recents}
+          activeConvId={route.view === "conversation" ? (route.conversationId ?? null) : null}
+          onPickConv={onPickConv}
+          onSuggest={(s) => setQuery(s)}
+          embed={embed}
+        />
+        <div style={{
+          flex: 1,
+          display: "flex",
+          flexDirection: "column",
+          minWidth: 0,
+          background: "var(--surface)",
+          borderLeft: "1px solid var(--hairline)",
+          borderRight: "1px solid var(--hairline)",
+        }}>
+          {query.trim() ? (
+            <ResultsView
+              query={query}
+              results={results}
+              onPick={onPickResult}
+            />
+          ) : route.view === "conversation" && route.conversationId ? (
+            <ConversationView
+              convId={route.conversationId}
+              msgIdAnchor={route.msgId}
+              initialQuery={route.q}
+              onConvDataLoaded={onConvDataLoaded}
+              registerJumpTo={registerJumpTo}
+              registerActive={registerActive}
+            />
+          ) : (
+            <HomeWelcome recents={recents} onPick={onPickConv} />
+          )}
+        </div>
+        <RightRail
+          conv={query.trim() ? null : convData}
+          activeIdx={activeIdx}
+          pulseIdx={pulseIdx}
+          filterMatches={filterMatches}
+          onJump={(idx) => jumpToRef.current?.(idx, true)}
+          hidden={query.trim().length > 0 || route.view !== "conversation"}
+        />
+      </div>
+    </div>
+  );
+}
+
+// ─── Error boundary ───────────────────────────────────────────────────────────
+
+interface EBState { error: Error | null }
+
+class ErrorBoundary extends Component<{ children: React.ReactNode }, EBState> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error: Error): EBState {
+    return { error };
+  }
+  componentDidCatch(error: Error, info: ErrorInfo): void {
+    console.error("[smriti] uncaught render error", error, info.componentStack);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{
+          display: "flex", flexDirection: "column", alignItems: "center",
+          justifyContent: "center", height: "100vh", gap: "16px",
+          fontFamily: "system-ui, sans-serif", color: "#6b2737", background: "#fdf6f0",
+        }}>
+          <div style={{ fontSize: "32px" }}>⚠️</div>
+          <div style={{ fontSize: "18px", fontWeight: 600 }}>Something went wrong</div>
+          <div style={{ fontSize: "13px", color: "#888", maxWidth: "420px", textAlign: "center" }}>
+            {this.state.error.message}
+          </div>
+          <button
+            onClick={() => this.setState({ error: null })}
+            style={{
+              marginTop: "8px", padding: "8px 20px", borderRadius: "6px",
+              border: "none", background: "#6b2737", color: "#fff",
+              fontSize: "13px", cursor: "pointer",
+            }}
+          >
+            Try again
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// ─── Mount ────────────────────────────────────────────────────────────────────
+
+const root = document.getElementById("root");
+if (root) createRoot(root).render(
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>
+);

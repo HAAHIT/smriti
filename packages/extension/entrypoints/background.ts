@@ -1,0 +1,277 @@
+// Background Service Worker.
+//
+// New architecture: no native messaging. The offscreen document owns SQLite,
+// embeddings, and backfill. Background manages:
+//   • Offscreen document lifecycle (create / keep alive / auto-recover).
+//   • Message routing: content scripts → offscreen.
+//   • Per-host capture toggle (persisted in chrome.storage.local).
+//   • Badge updates.
+//   • Toolbar icon → opens options page.
+
+import { defineBackground } from "wxt/sandbox";
+import type { CaptureEvent, Platform } from "@recall/shared";
+
+const OFFSCREEN_URL = chrome.runtime.getURL("/offscreen.html");
+
+// Per-host capture pause. Persisted in chrome.storage.local.
+const PAUSED_HOSTS_KEY = "smriti:paused-hosts";
+const pausedHosts = new Set<string>();
+
+function platformToHost(p: string): string | null {
+  if (p === "claude") return "claude.ai";
+  if (p === "chatgpt") return "chatgpt.com";
+  if (p === "gemini") return "gemini.google.com";
+  return null;
+}
+
+void browser.storage.local.get(PAUSED_HOSTS_KEY).then((o) => {
+  const list = o[PAUSED_HOSTS_KEY];
+  if (Array.isArray(list)) list.forEach((h) => pausedHosts.add(String(h)));
+});
+
+function persistPausedHosts(): void {
+  browser.storage.local.set({ [PAUSED_HOSTS_KEY]: [...pausedHosts] }).catch(() => {});
+}
+
+// ─── Offscreen document lifecycle ────────────────────────────────────────────
+//
+// Chrome can close an offscreen document when the service worker is dormant.
+// We guard against this with:
+//   1. ensureOffscreen() checks hasDocument() before every sendToOffscreen()
+//   2. A 25-second keepalive ping (below Chrome's ~30s SW dormancy window)
+//   3. The offscreen doc sends "offscreen_ready" when it boots so we know
+//      when it's safe to send messages.
+
+let offscreenReady = false;
+let readyWaiters: Array<() => void> = [];
+let offscreenCreating: Promise<void> | null = null;
+
+async function ensureOffscreen(): Promise<void> {
+  if (offscreenCreating) return offscreenCreating;
+  const existing = await chrome.offscreen.hasDocument();
+  if (!existing) {
+    offscreenReady = false;
+    offscreenCreating = chrome.offscreen
+      .createDocument({
+        url: OFFSCREEN_URL,
+        reasons: [chrome.offscreen.Reason.BLOBS],
+        justification: "SQLite database and embedding model for conversation archive",
+      })
+      .finally(() => { offscreenCreating = null; });
+    await offscreenCreating;
+  }
+}
+
+function waitForOffscreen(): Promise<void> {
+  if (offscreenReady) return Promise.resolve();
+  return new Promise((resolve) => {
+    readyWaiters.push(resolve);
+  });
+}
+
+// Keepalive: ping the offscreen doc every 25 s.
+// This prevents Chrome from closing it while the service worker is still
+// being kept alive by pending messages.
+let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
+
+function startKeepalive(): void {
+  if (keepaliveTimer) return;
+  keepaliveTimer = setInterval(() => {
+    chrome.offscreen.hasDocument().then((has) => {
+      if (!has) {
+        offscreenReady = false;
+        void ensureOffscreen();
+      }
+    }).catch(() => {});
+  }, 25_000);
+}
+
+// ─── Send message to offscreen doc ───────────────────────────────────────────
+
+async function sendToOffscreen(payload: Record<string, unknown>): Promise<unknown> {
+  await ensureOffscreen();
+  await waitForOffscreen();
+  const result = await chrome.runtime.sendMessage({ ...payload, target: "offscreen" });
+  // If offscreen returned an error object, propagate it.
+  const r = result as { ok?: boolean; error?: string } | null;
+  if (r && r.ok === false) throw new Error(r.error ?? "offscreen error");
+  return result;
+}
+
+// ─── Background entry point ───────────────────────────────────────────────────
+
+export default defineBackground(() => {
+  console.log("[smriti] background ready");
+
+  // Create offscreen doc on startup.
+  void ensureOffscreen();
+  startKeepalive();
+
+  // Toolbar icon → open options page.
+  browser.action.onClicked.addListener(() => {
+    browser.runtime.openOptionsPage().catch(() => {
+      browser.tabs.create({ url: browser.runtime.getURL("/options.html") });
+    });
+  });
+
+  // ─── Message router ──────────────────────────────────────────────────────
+
+  browser.runtime.onMessage.addListener(
+    ((msg: unknown, _sender: unknown, sendResponse: (r: unknown) => void): true | undefined => {
+      if (typeof msg !== "object" || msg === null) return;
+      const kind = (msg as { kind?: string }).kind;
+
+      // ── Offscreen lifecycle events ──────────────────────────────────────
+
+      if (kind === "offscreen_ready") {
+        offscreenReady = true;
+        console.log("[smriti] offscreen ready");
+        setBadgeOk();
+        const waiters = readyWaiters.splice(0);
+        waiters.forEach((fn) => fn());
+        return;
+      }
+
+      if (kind === "offscreen_error") {
+        const error = (msg as { error?: string }).error;
+        console.error("[smriti] offscreen boot error:", error);
+        setBadgeError();
+        return;
+      }
+
+      // ── Backfill progress (forwarded from offscreen → listeners) ────────
+
+      if (kind === "backfill_progress" || kind === "backfill_done") {
+        void browser.storage.local.set({ "smriti:last_progress": msg });
+        broadcastToUi(msg).catch(() => {});
+        return;
+      }
+
+      // ── Capture events from content scripts ─────────────────────────────
+
+      if (kind === "capture") {
+        const events = (msg as { events: CaptureEvent[] }).events;
+        handleCapture(events)
+          .then((res) => sendResponse({ ok: true, res }))
+          .catch((err) => sendResponse({ ok: false, error: String(err) }));
+        return true;
+      }
+
+      // ── Start backfill (from options page) ───────────────────────────────
+
+      if (kind === "start_backfill") {
+        const platform = (msg as { platform: Platform }).platform;
+        sendToOffscreen({ type: "start_backfill", platform })
+          .then((res) => {
+            const r = (res as { result?: { resuming?: boolean } })?.result ?? res as { resuming?: boolean };
+            sendResponse({ ok: true, resuming: (r as { resuming?: boolean })?.resuming ?? false });
+          })
+          .catch((err) => sendResponse({ ok: false, error: String(err) }));
+        return true;
+      }
+
+      // ── Direct offscreen pass-through ────────────────────────────────────
+      // Options page / sidebar send { kind: "to_offscreen", type, ...payload }.
+
+      if (kind === "to_offscreen") {
+        const { kind: _k, ...payload } = msg as Record<string, unknown>;
+        sendToOffscreen(payload)
+          .then((res) => sendResponse({ ok: true, res }))
+          .catch((err) => sendResponse({ ok: false, error: String(err) }));
+        return true;
+      }
+
+      // ── Capture toggle ────────────────────────────────────────────────────
+
+      if (kind === "capture_toggle") {
+        const host = String((msg as { host?: string }).host ?? "");
+        const off = !!(msg as { off?: boolean }).off;
+        if (host) {
+          if (off) pausedHosts.add(host);
+          else pausedHosts.delete(host);
+          persistPausedHosts();
+        }
+        sendResponse({ ok: true });
+        return true;
+      }
+
+      // ── Get backfill progress (for options page) ─────────────────────────
+
+      if (kind === "get_backfill_progress") {
+        browser.storage.local.get("smriti:last_progress")
+          .then((o) => sendResponse({ ok: true, progress: o["smriti:last_progress"] ?? null }))
+          .catch((err) => sendResponse({ ok: false, error: String(err) }));
+        return true;
+      }
+
+      // ── Health check / ping ───────────────────────────────────────────────
+
+      if (kind === "health_check") {
+        sendToOffscreen({ type: "ping" })
+          .then(() => { setBadgeOk(); sendResponse({ ok: true }); })
+          .catch((err) => { setBadgeError(); sendResponse({ ok: false, error: String(err) }); });
+        return true;
+      }
+
+      return undefined; // no handler matched
+    }) as Parameters<typeof browser.runtime.onMessage.addListener>[0],
+  );
+});
+
+// ─── Capture handling ─────────────────────────────────────────────────────────
+
+async function handleCapture(events: CaptureEvent[]): Promise<{ accepted: number }> {
+  if (!events || events.length === 0) return { accepted: 0 };
+
+  const filtered = events.filter((e) => {
+    const host = platformToHost(e.platform);
+    return !host || !pausedHosts.has(host);
+  });
+  if (filtered.length === 0) return { accepted: 0 };
+
+  const res = await sendToOffscreen({ type: "ingest", events: filtered });
+  const r = (res as { result?: { accepted: number } })?.result ?? res as { accepted?: number };
+  const accepted = (r as { accepted?: number })?.accepted ?? 0;
+
+  if (accepted > 0) bumpBadge(accepted);
+  return { accepted };
+}
+
+// ─── Badge helpers ────────────────────────────────────────────────────────────
+
+let pendingBadge = 0;
+let badgeTimer: ReturnType<typeof setTimeout> | null = null;
+
+function bumpBadge(n: number): void {
+  if (n <= 0) return;
+  pendingBadge += n;
+  browser.action.setBadgeBackgroundColor({ color: "#1f8a4c" }).catch(() => {});
+  browser.action.setBadgeText({ text: String(pendingBadge) }).catch(() => {});
+  if (badgeTimer) clearTimeout(badgeTimer);
+  badgeTimer = setTimeout(() => {
+    pendingBadge = 0;
+    browser.action.setBadgeText({ text: "" }).catch(() => {});
+  }, 8_000);
+}
+
+function setBadgeOk(): void {
+  browser.action.setBadgeBackgroundColor({ color: "#1f8a4c" }).catch(() => {});
+  browser.action.setBadgeText({ text: "" }).catch(() => {});
+}
+
+function setBadgeError(): void {
+  browser.action.setBadgeBackgroundColor({ color: "#b00020" }).catch(() => {});
+  browser.action.setBadgeText({ text: "!" }).catch(() => {});
+}
+
+// ─── UI broadcast ─────────────────────────────────────────────────────────────
+
+async function broadcastToUi(msg: unknown): Promise<void> {
+  const tabs = await browser.tabs.query({});
+  const optionsUrl = browser.runtime.getURL("/options.html");
+  for (const tab of tabs) {
+    if (tab.id && tab.url && tab.url.startsWith(optionsUrl)) {
+      browser.tabs.sendMessage(tab.id, msg).catch(() => {});
+    }
+  }
+}

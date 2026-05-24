@@ -1,0 +1,20 @@
+{
+  "name": "@recall/mcp-server",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": {
+    "recall-mcp": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@recall/shared": "*"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2"
+  }
+}

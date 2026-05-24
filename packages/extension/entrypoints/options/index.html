@@ -1,0 +1,210 @@
+<!doctype html>
+<html data-theme="light">
+<head>
+<meta charset="utf-8" />
+<title>Smriti — your AI memory</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link
+  href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&family=JetBrains+Mono:wght@400;500&display=swap"
+  rel="stylesheet"
+/>
+<style>
+  /* ─── Tokens ─────────────────────────────────────────────────────────
+     Library/notebook aesthetic. Three palettes swap via data-theme on <html>.
+     Type: Newsreader (serif, chapter feel) + DM Sans (body) + JetBrains Mono. */
+
+  :root {
+    --serif: 'Source Serif 4', ui-serif, Georgia, 'Times New Roman', serif;
+    --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  [data-theme="light"] {
+    --bg: #f6f1e6;
+    --surface: #fcf9f1;
+    --surface-2: #f1ebdb;
+    --ink: #2a2620;
+    --ink-2: #4a4338;
+    --muted: #8a7f6b;
+    --muted-2: #b5aa94;
+    --hairline: #e3dac4;
+    --hairline-strong: #d3c8ae;
+    --accent: #8b3a2f;
+    --accent-soft: #d9a59c;
+    --highlight: #f3e1a6;
+    --highlight-strong: #e8c45a;
+    --provider-claude: #c96442;
+    --provider-chatgpt: #1f7a64;
+    --provider-gemini: #3b6cb5;
+    --provider-code: #6d5fa6;
+    --chip-bg: rgba(0,0,0,0.04);
+    --shadow-soft: 0 1px 0 rgba(60,50,40,0.05);
+  }
+
+  [data-theme="sepia"] {
+    --bg: #e7d9bb;
+    --surface: #f0e4c8;
+    --surface-2: #ddcca8;
+    --ink: #3a2c1a;
+    --ink-2: #564228;
+    --muted: #8c7556;
+    --muted-2: #b69e7c;
+    --hairline: #cab592;
+    --hairline-strong: #b59f78;
+    --accent: #7a3320;
+    --accent-soft: #c08877;
+    --highlight: #e8c66a;
+    --highlight-strong: #d09a1c;
+    --provider-claude: #a14627;
+    --provider-chatgpt: #2f6852;
+    --provider-gemini: #345d96;
+    --provider-code: #5a4c8a;
+    --chip-bg: rgba(58,44,26,0.06);
+    --shadow-soft: 0 1px 0 rgba(58,44,26,0.06);
+  }
+
+  [data-theme="dark"] {
+    --bg: #14130f;
+    --surface: #1b1a15;
+    --surface-2: #232118;
+    --ink: #ece4d0;
+    --ink-2: #c4bda9;
+    --muted: #8a8270;
+    --muted-2: #5f5947;
+    --hairline: #2c2a22;
+    --hairline-strong: #3a3729;
+    --accent: #d69960;
+    --accent-soft: #6b4d2e;
+    --highlight: #5a4612;
+    --highlight-strong: #c8983a;
+    --provider-claude: #e09063;
+    --provider-chatgpt: #5fb89c;
+    --provider-gemini: #7ba0d8;
+    --provider-code: #a695d6;
+    --chip-bg: rgba(255,247,228,0.05);
+    --shadow-soft: 0 1px 0 rgba(0,0,0,0.3);
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body, #root { height: 100%; }
+  body {
+    margin: 0;
+    font-family: var(--sans);
+    color: var(--ink);
+    background: var(--bg);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-size: 14.5px;
+    line-height: 1.6;
+  }
+
+  .serif { font-family: var(--serif); font-weight: 500; letter-spacing: -0.005em; }
+  .mono  { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .smallcaps {
+    font-family: var(--sans);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--muted);
+  }
+  ::selection { background: var(--highlight); color: var(--ink); }
+
+  /* ─── Scrollbars ── */
+  .scroll {
+    scrollbar-width: thin;
+    scrollbar-color: var(--hairline-strong) transparent;
+  }
+  .scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+  .scroll::-webkit-scrollbar-track { background: transparent; }
+  .scroll::-webkit-scrollbar-thumb { background: var(--hairline-strong); border-radius: 4px; }
+  .scroll::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+  /* ─── Reusable bits ── */
+  .hairline { background: var(--hairline); height: 1px; width: 100%; }
+  .kbd {
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 1px 5px;
+    border: 1px solid var(--hairline-strong);
+    border-bottom-width: 2px;
+    border-radius: 3px;
+    color: var(--muted);
+    background: var(--surface);
+    line-height: 1;
+  }
+  .provider-dot {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+  }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--chip-bg);
+    font-size: 11px;
+    color: var(--ink-2);
+    font-weight: 500;
+  }
+
+  /* ─── Pulse animation for deep-link target ── */
+  @keyframes pulseHighlight {
+    0%   { background: transparent; box-shadow: 0 0 0 0 transparent; }
+    15%  { background: var(--highlight); box-shadow: 0 0 0 6px var(--highlight); }
+    100% { background: transparent; box-shadow: 0 0 0 0 transparent; }
+  }
+  .pulse-target { animation: pulseHighlight 2.2s ease-out 1; }
+
+  mark.match {
+    background: var(--highlight);
+    color: var(--ink);
+    padding: 0 2px;
+    border-radius: 2px;
+    font-weight: 500;
+  }
+
+  /* ─── Message body ── */
+  .msg-body p { margin: 0 0 0.7em 0; }
+  .msg-body p:last-child { margin-bottom: 0; }
+  .msg-body code {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    background: var(--chip-bg);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+  .msg-body pre {
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.55;
+    background: var(--surface-2);
+    border: 1px solid var(--hairline);
+    border-radius: 4px;
+    padding: 10px 12px;
+    margin: 8px 0;
+    overflow-x: auto;
+    color: var(--ink-2);
+  }
+  .msg-body pre code { background: transparent; padding: 0; font-size: inherit; }
+  .msg-body ol, .msg-body ul { margin: 4px 0 6px 0; padding-left: 20px; }
+  .msg-body li { margin: 2px 0; }
+
+  button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  button { font-family: inherit; color: inherit; }
+  input  { font-family: inherit; color: inherit; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="module" src="./main.tsx"></script>
+</body>
+</html>

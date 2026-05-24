@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.output/
+.wxt/
+*.tsbuildinfo
+*.log
+.env
+.env.local
+
+# Helper runtime artifacts
+packages/helper/data/
+packages/helper/*.db
+packages/helper/*.db-journal
+packages/helper/*.db-wal
+packages/helper/*.db-shm

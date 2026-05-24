@@ -1,0 +1,21 @@
+{
+  "name": "recall",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Local-first archive + search + reference layer for AI conversations across Claude, ChatGPT, Gemini, and Claude Code.",
+  "workspaces": [
+    "packages/shared",
+    "packages/extension"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "dev:extension": "npm run dev --workspace=@recall/extension"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "@types/node": "^22.9.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
