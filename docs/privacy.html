@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Smriti — Privacy Policy</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 700px; margin: 60px auto; padding: 0 24px; color: #222; line-height: 1.8; }
+  h1 { font-size: 2rem; color: #6b2737; }
+  h2 { font-size: 1.2rem; color: #6b2737; margin-top: 2rem; }
+  code { background: #f4f0eb; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+  a { color: #6b2737; }
+  .updated { color: #888; font-size: 0.9em; }
+</style>
+</head>
+<body>
+<h1>Smriti Privacy Policy</h1>
+<p class="updated">Last updated: 2026-05-24</p>
+<p>Smriti is built local-first. Short version: <strong>your conversations never leave your browser</strong>.</p>
+
+<h2>What Smriti collects</h2>
+<p>Smriti archives the AI conversations you have on claude.ai, chatgpt.com, and gemini.google.com. For each conversation it stores: message text, conversation metadata (title, platform, URL, timestamps), and a locally-computed embedding vector for semantic search.</p>
+
+<h2>Where your data is stored</h2>
+<p>All data is kept in a SQLite database inside your browser's <strong>Origin Private File System (OPFS)</strong> — sandboxed to this extension, invisible to websites, never readable by Smriti's developers or any third party. There is no local helper program, no companion app, no external database.</p>
+
+<h2>What Smriti does NOT collect</h2>
+<ul>
+  <li>No analytics or telemetry</li>
+  <li>No crash reports</li>
+  <li>No accounts</li>
+  <li>No browser history, bookmarks, cookies, passwords, or activity outside the three AI hosts</li>
+</ul>
+
+<h2>Network requests</h2>
+<ol>
+  <li><strong>One-time model download</strong> — the all-MiniLM-L6-v2 ONNX model (~25 MB) from Hugging Face's CDN on first use. Cached permanently. Contains no user data.</li>
+  <li><strong>Backfill fetch</strong> — when you click "Import history", Smriti uses your existing browser session to fetch past conversations from claude.ai or chatgpt.com directly. Smriti never sees your password or auth tokens.</li>
+</ol>
+<p>No conversation content, message text, or embeddings are ever transmitted to any server.</p>
+
+<h2>Permissions</h2>
+<ul>
+  <li><code>storage</code> — UI preferences only (theme, pause toggles). No conversation data.</li>
+  <li><code>offscreen</code> — persistent hidden page that owns the SQLite database and embedding pipeline. All data stays inside Chrome.</li>
+  <li><code>scripting</code> — injects the sidebar into AI chat tabs.</li>
+  <li>Host permissions for <code>claude.ai</code>, <code>chatgpt.com</code>, <code>gemini.google.com</code> — to run capture scripts and the sidebar on those three surfaces only.</li>
+</ul>
+
+<h2>Your controls</h2>
+<p>From Settings you can pause capture per host, or wipe the entire archive. Uninstalling the extension causes Chrome to delete its OPFS storage automatically.</p>
+
+<h2>Open source</h2>
+<p><a href="https://github.com/HAAHIT/smriti">github.com/HAAHIT/smriti</a></p>
+
+<h2>Contact</h2>
+<p><a href="https://github.com/HAAHIT/smriti/issues">Open an issue</a> or email <a href="mailto:agrawalhitesh4444@gmail.com">agrawalhitesh4444@gmail.com</a></p>
+</body>
+</html>

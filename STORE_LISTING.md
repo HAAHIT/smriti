@@ -140,9 +140,9 @@ WHAT IT DOESN'T DO
 OPEN SOURCE
 ─────────────────────────────────────────
 
-Source code: https://github.com/<your-handle>/smriti
-Privacy policy: https://<your-handle>.github.io/smriti/privacy
-Issues & feedback: https://github.com/<your-handle>/smriti/issues
+Source code: https://github.com/HAAHIT/smriti
+Privacy policy: https://HAAHIT.github.io/smriti/privacy
+Issues & feedback: https://github.com/HAAHIT/smriti/issues
 
 ─────────────────────────────────────────
 REQUIREMENTS
@@ -271,7 +271,7 @@ Under "personally identifiable information":
 ## Privacy policy URL
 
 Host the contents of `PRIVACY_POLICY.md` at a public URL, e.g.:
-`https://<your-handle>.github.io/smriti/privacy`
+`https://HAAHIT.github.io/smriti/privacy`
 
 ---
 
@@ -280,7 +280,7 @@ Host the contents of `PRIVACY_POLICY.md` at a public URL, e.g.:
 - [ ] Pay the one-time $5 CWS developer registration fee
 - [ ] Create GitHub repo and push source code
 - [ ] Deploy privacy policy to public URL
-- [ ] Fill in all `<your-handle>` / `<your-email>` placeholders
+- [ ] Fill in all `HAAHIT` / `agrawalhitesh4444@gmail.com` placeholders
 - [ ] Run `npx wxt zip` to produce the submission zip (no source maps)
 - [ ] Upload zip via CWS dashboard
 - [ ] Set item name, short description, detailed description (above)

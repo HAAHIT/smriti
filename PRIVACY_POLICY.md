@@ -108,13 +108,13 @@ automatically.
 ## Open source
 
 Smriti is open source. You can audit exactly what the extension does at:
-https://github.com/<your-handle>/smriti
+https://github.com/HAAHIT/smriti
 
 ## Contact
 
 For privacy questions or to report a concern:
-- Open an issue: https://github.com/<your-handle>/smriti/issues
-- Email: `<your-email>`
+- Open an issue: https://github.com/HAAHIT/smriti/issues
+- Email: `agrawalhitesh4444@gmail.com`
 
 ## Changes to this policy
 
