@@ -107,6 +107,13 @@ export default defineBackground(() => {
   void ensureOffscreen();
   startKeepalive();
 
+  // Fresh install → open the memory-first onboarding funnel.
+  chrome.runtime.onInstalled.addListener((d) => {
+    if (d.reason === "install") {
+      void chrome.tabs.create({ url: chrome.runtime.getURL("/options.html#/welcome") });
+    }
+  });
+
   // Toolbar icon → open options page.
   browser.action.onClicked.addListener(() => {
     browser.runtime.openOptionsPage().catch(() => {

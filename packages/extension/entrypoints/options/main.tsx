@@ -1678,21 +1678,8 @@ function useHelperState(): HelperState {
 
 const ONBOARDED_KEY = "smriti:onboarded";
 
-function detectOS(): "windows" | "macos" | "linux" {
-  const ua = navigator.userAgent.toLowerCase();
-  if (ua.includes("mac")) return "macos";
-  if (ua.includes("linux")) return "linux";
-  return "windows";
-}
-
-function Onboarding({ helperState, onDone }: { helperState: HelperState; onDone: () => void }) {
-  const [step, setStep] = useState<1 | 2 | 3>(helperState === "ok" ? 3 : 1);
-  const os = detectOS();
-  const extId = chrome.runtime.id;
-
-  useEffect(() => {
-    if (helperState === "ok" && step === 2) setStep(3);
-  }, [helperState, step]);
+function Onboarding({ onDone }: { onDone: () => void }) {
+  const [step, setStep] = useState<1 | 2 | 3>(1);
 
   return (
     <div style={{
@@ -1731,7 +1718,7 @@ function Onboarding({ helperState, onDone }: { helperState: HelperState; onDone:
         </div>
 
         {step === 1 && <OnboardingStep1 onNext={() => setStep(2)} />}
-        {step === 2 && <OnboardingStep2 os={os} extId={extId} helperState={helperState} onNext={() => setStep(3)} />}
+        {step === 2 && <OnboardingStep2 onNext={() => setStep(3)} />}
         {step === 3 && <OnboardingStep3 onDone={onDone} />}
       </div>
     </div>
@@ -1742,18 +1729,18 @@ function OnboardingStep1({ onNext }: { onNext: () => void }) {
   return (
     <div>
       <h1 className="serif" style={{ fontSize: 30, fontWeight: 600, lineHeight: 1.15, letterSpacing: "-0.01em", margin: "0 0 12px" }}>
-        Your AI conversations, indexed and searchable across every tool.
+        Your AI is about to remember you.
       </h1>
       <p style={{ fontSize: 15, color: "var(--ink-2)", lineHeight: 1.6, margin: "0 0 24px", maxWidth: 580 }}>
-        Smriti quietly archives every message you send and receive on Claude, ChatGPT,
-        Gemini, and Claude Code — then makes it searchable from anywhere, with hybrid
-        keyword + semantic recall and an auto-generated outline for any long chat.
+        Smriti quietly turns your conversations into a memory of who you are — then hands
+        that context back to Claude, ChatGPT, and Gemini, so you never have to re-explain
+        yourself.
       </p>
-      <ul style={{ listStyle: "none", padding: 0, marginBottom: 28, display: "flex", flexDirection: "column", gap: 10 }}>
+      <ul style={{ listStyle: "none", padding: 0, marginBottom: 20, display: "flex", flexDirection: "column", gap: 10 }}>
         {[
-          { t: "Pinpoint past discussions", d: "Find that specific exchange from 3 weeks ago — even if you only vaguely remember it." },
-          { t: "100% local", d: "Your conversations never leave your machine. No cloud, no accounts, no telemetry." },
-          { t: "Lives where you work", d: "A sidebar inside claude.ai/chatgpt.com/gemini surfaces past relevant chats as you type." },
+          { t: "Captured automatically", d: "Smriti reads your conversations on claude.ai, chatgpt.com, and gemini.google.com as they happen — no setup." },
+          { t: "Distilled into durable facts", d: "Who you are, how you like to work, what you're building — extracted from those chats and kept up to date." },
+          { t: "Injected in one click", d: "Start typing in a new chat and Smriti recalls what's relevant, ready to drop straight into your prompt." },
         ].map((row) => (
           <li key={row.t} style={{ display: "flex", gap: 12 }}>
             <div style={{ flex: "0 0 10px", marginTop: 8, width: 10, height: 2, background: "var(--accent)" }} />
@@ -1764,148 +1751,267 @@ function OnboardingStep1({ onNext }: { onNext: () => void }) {
           </li>
         ))}
       </ul>
-      <PrimaryButton onClick={onNext}>Let's set it up →</PrimaryButton>
+      <div style={{
+        background: "var(--surface)", border: "1px solid var(--hairline)",
+        borderRadius: 6, padding: "12px 16px", marginBottom: 28,
+        fontSize: 13, color: "var(--ink-2)", lineHeight: 1.6,
+      }}>
+        <strong style={{ color: "var(--ink)" }}>Everything stays in your browser.</strong>{" "}
+        Nothing is uploaded — there's no server.
+      </div>
+      <PrimaryButton onClick={onNext}>Next</PrimaryButton>
     </div>
   );
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-function OnboardingStep2({ os: _os, extId: _extId, helperState: _helperState, onNext }: { os: ReturnType<typeof detectOS>; extId: string; helperState: HelperState; onNext: () => void }) {
-  const sites = [
-    { label: "claude.ai", color: "var(--provider-claude, #d97706)", initial: "C" },
-    { label: "chatgpt.com", color: "var(--provider-chatgpt, #19c37d)", initial: "G" },
-    { label: "gemini.google.com", color: "#4285F4", initial: "G" },
-  ];
-
+function OnboardingStep2({ onNext }: { onNext: () => void }) {
   return (
     <div>
       <h1 className="serif" style={{ fontSize: 26, fontWeight: 600, lineHeight: 1.2, letterSpacing: "-0.01em", margin: "0 0 8px" }}>
-        Capture is already running
+        Import your history.
       </h1>
-      <p style={{ fontSize: 14, color: "var(--muted)", margin: "0 0 22px", fontStyle: "italic" }}>
-        No setup required. Everything runs inside the browser — no installs, no scripts.
+      <p style={{ fontSize: 14, color: "var(--muted)", margin: "0 0 22px", fontStyle: "italic", maxWidth: 560 }}>
+        Pull in your past conversations so Smriti has something to learn from right away —
+        the more it can read, the more it remembers.
       </p>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 28 }}>
-        {sites.map((s) => (
-          <div key={s.label} style={{
-            display: "flex", alignItems: "center", gap: 12,
-            background: "var(--surface)", border: "1px solid var(--hairline)",
-            borderRadius: 6, padding: "10px 14px",
-          }}>
-            <div style={{
-              width: 26, height: 26, borderRadius: 13,
-              background: s.color,
-              display: "flex", alignItems: "center", justifyContent: "center",
-              color: "#fff", fontSize: 11, fontWeight: 700, flexShrink: 0,
-            }}>{s.initial}</div>
-            <div>
-              <div style={{ fontSize: 14, fontWeight: 600, color: "var(--ink)" }}>{s.label}</div>
-              <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>
-                Messages captured automatically as you chat
-              </div>
-            </div>
-            <div style={{ marginLeft: "auto", fontSize: 11, color: "var(--provider-chatgpt, #19c37d)", fontWeight: 700 }}>● live</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14 }}>
+        <ImportCard platform="claude" label="Claude" color="var(--provider-claude)" />
+        <ImportCard platform="chatgpt" label="ChatGPT" color="var(--provider-chatgpt)" />
+      </div>
+
+      <p style={{ fontSize: 12.5, color: "var(--muted)", fontStyle: "italic", margin: "0 0 28px", lineHeight: 1.6 }}>
+        Gemini is captured live as you chat — no import needed. Imports keep running in the
+        background, so it's safe to continue even while one is in progress.
+      </p>
+
+      <div style={{ display: "flex", gap: 10 }}>
+        <GhostButton onClick={onNext}>Skip for now</GhostButton>
+        <PrimaryButton onClick={onNext}>Continue →</PrimaryButton>
+      </div>
+    </div>
+  );
+}
+
+// Per-platform import card for onboarding step 2. Mirrors BackfillSection's
+// start / listen / restore pattern (start_backfill + backfill_progress
+// broadcasts + get_backfill_progress restore-on-mount), scoped to one platform.
+type ImportPhase = "idle" | "starting" | "running" | "done" | "failed";
+
+function ImportCard({ platform, label, color }: { platform: "claude" | "chatgpt"; label: string; color: string }) {
+  const [phase, setPhase] = useState<ImportPhase>("idle");
+  const [progress, setProgress] = useState<BackfillProgress | null>(null);
+
+  const applyProgress = useCallback((p: BackfillProgress) => {
+    setProgress(p);
+    if (p.state === "complete" || p.state === "partial") setPhase("done");
+    else if (p.state === "failed") setPhase("failed");
+    else setPhase("running");
+  }, []);
+
+  // Restore prior state from chrome.storage.local (background persisted it).
+  useEffect(() => {
+    browser.runtime.sendMessage({ kind: "get_backfill_progress" })
+      .then((resp: unknown) => {
+        const r = resp as { ok?: boolean; progress?: { progress?: BackfillProgress } } | undefined;
+        const p = r?.ok ? r.progress?.progress : undefined;
+        if (p && p.platform === platform) applyProgress(p);
+      }).catch(() => {});
+  }, [platform, applyProgress]);
+
+  // Listen for live progress broadcasts.
+  useEffect(() => {
+    const handler = (msg: unknown) => {
+      if (typeof msg !== "object" || msg === null) return;
+      const m = msg as { kind?: string; progress?: BackfillProgress };
+      if (m.kind !== "backfill_progress" || !m.progress || m.progress.platform !== platform) return;
+      applyProgress(m.progress);
+    };
+    browser.runtime.onMessage.addListener(handler);
+    return () => browser.runtime.onMessage.removeListener(handler);
+  }, [platform, applyProgress]);
+
+  const start = useCallback(() => {
+    if (phase === "starting" || phase === "running") return;
+    setPhase("starting");
+    browser.runtime.sendMessage({ kind: "start_backfill", platform })
+      .then((resp: unknown) => {
+        const r = resp as { ok?: boolean } | undefined;
+        if (!r?.ok) { setPhase("failed"); return; }
+        setPhase("running");
+      })
+      .catch(() => setPhase("failed"));
+  }, [phase, platform]);
+
+  const canStart = phase === "idle" || phase === "done" || phase === "failed";
+  const isActive = phase === "starting" || phase === "running";
+  const pct = progress?.total_known && progress.total_known > 0
+    ? Math.round((progress.total_fetched / progress.total_known) * 100)
+    : null;
+
+  return (
+    <div style={{
+      background: "var(--surface)", border: "1px solid var(--hairline)",
+      borderRadius: 6, padding: "14px 16px",
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <div style={{ width: 10, height: 10, borderRadius: 5, background: color, flexShrink: 0 }} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="serif" style={{ fontSize: 15, fontWeight: 600 }}>{label}</div>
+          <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>
+            {phase === "done" && progress
+              ? progress.state === "complete"
+                ? `Imported ${progress.total_fetched} conversation${progress.total_fetched === 1 ? "" : "s"} ✓`
+                : `Imported ${progress.total_fetched} so far — partial`
+              : phase === "failed"
+              ? "Import failed — click to retry"
+              : isActive
+              ? "Importing your history…"
+              : "Pull in your past conversations"}
           </div>
-        ))}
+        </div>
+        <button
+          onClick={start}
+          disabled={!canStart}
+          style={{
+            background: canStart ? "var(--accent)" : "var(--surface-2)",
+            color: canStart ? "#f6f0e3" : "var(--muted)",
+            border: "none", borderRadius: 4, padding: "7px 14px",
+            fontSize: 12, fontWeight: 600, cursor: canStart ? "pointer" : "default",
+            whiteSpace: "nowrap", flexShrink: 0, fontFamily: "var(--sans)",
+          }}
+        >
+          {phase === "starting"
+            ? "Starting…"
+            : isActive
+            ? "Importing…"
+            : phase === "done"
+            ? "Re-import"
+            : phase === "failed"
+            ? "Retry"
+            : "Import"}
+        </button>
       </div>
 
-      <div style={{
-        background: "var(--surface)", border: "1px solid var(--hairline)",
-        borderRadius: 6, padding: "12px 16px", marginBottom: 24,
-        fontSize: 13, color: "var(--ink-2)", lineHeight: 1.6,
-      }}>
-        <strong style={{ color: "var(--ink)" }}>100% local.</strong>{" "}
-        Your conversations are stored in an encrypted SQLite database inside the browser's private
-        storage — they never leave your device.
-      </div>
-
-      <PrimaryButton onClick={onNext}>Continue →</PrimaryButton>
+      {isActive && progress && (
+        <div style={{ marginTop: 10, fontSize: 11, color: "var(--muted)" }}>
+          {progress.state === "discovering" && <div>Discovering conversations…</div>}
+          {progress.state === "fetching" && (
+            <div>{progress.total_fetched}{progress.total_known ? ` / ${progress.total_known}` : ""} fetched</div>
+          )}
+          {progress.state === "rate_limited" && <div style={{ color: "var(--accent)" }}>Rate limited — pausing…</div>}
+          {pct !== null && (
+            <div style={{ background: "var(--surface-2)", borderRadius: 3, height: 4, marginTop: 5, overflow: "hidden" }}>
+              <div style={{ width: `${pct}%`, height: "100%", background: "var(--accent)", transition: "width 0.5s ease" }} />
+            </div>
+          )}
+          {progress.latest_titles.length > 0 && (
+            <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 2 }}>
+              {progress.latest_titles.slice(-3).map((t, i) => (
+                <div key={i} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontStyle: "italic" }}>
+                  {t}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
 function OnboardingStep3({ onDone }: { onDone: () => void }) {
-  const [importing, setImporting] = useState<Record<string, boolean>>({});
+  const [building, setBuilding] = useState(false);
+  const [stats, setStats] = useState<MemoryStats | null>(null);
 
-  const startImport = (platform: "claude" | "chatgpt") => {
-    setImporting((prev) => ({ ...prev, [platform]: true }));
-    browser.runtime.sendMessage({ kind: "start_backfill", platform }).catch(() => {});
-  };
+  const buildNow = useCallback(async () => {
+    setBuilding(true);
+    try {
+      const r = await sendToHelper({ type: "build_memory_now" });
+      if (r.ok) setStats(r.stats as MemoryStats);
+    } catch {
+      // leave stats unset so the button reappears for a retry
+    } finally {
+      setBuilding(false);
+    }
+  }, []);
 
-  const importItems: Array<{
-    platform: "claude" | "chatgpt";
-    label: string;
-    desc: string;
-    color: string;
-  }> = [
-    { platform: "claude", label: "Import Claude.ai history", desc: "Pulls all past conversations from claude.ai using your browser session.", color: "#d97706" },
-    { platform: "chatgpt", label: "Import ChatGPT history", desc: "Pulls all past conversations from chatgpt.com using your browser session.", color: "#19c37d" },
-  ];
+  const seeMyMemory = useCallback(() => {
+    onDone();
+    location.hash = "/memory";
+  }, [onDone]);
 
   return (
     <div>
       <h1 className="serif" style={{ fontSize: 26, fontWeight: 600, lineHeight: 1.2, letterSpacing: "-0.01em", margin: "0 0 8px" }}>
-        You're all set.
+        Build your memory.
       </h1>
-      <p style={{ fontSize: 14, color: "var(--muted)", margin: "0 0 22px", fontStyle: "italic" }}>
-        Smriti is capturing every new message live. Optionally import your history:
+      <p style={{ fontSize: 14, color: "var(--muted)", margin: "0 0 22px", fontStyle: "italic", maxWidth: 560 }}>
+        Smriti scans everything it's captured so far and distills durable facts about you —
+        your role, your stack, your preferences, what you're building.
       </p>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 28 }}>
-        {importItems.map((item) => (
-          <div key={item.platform} style={{
-            padding: "16px 18px",
-            background: "var(--surface)",
-            border: "1px solid var(--hairline)",
-            borderRadius: 6,
-            display: "flex", alignItems: "center", gap: 14,
-          }}>
-            <div style={{
-              width: 10, height: 10, borderRadius: 5,
-              background: item.color, flexShrink: 0,
-            }} />
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 3 }}>
-                {item.label}
+      {!stats && (
+        <PrimaryButton onClick={buildNow} disabled={building}>
+          {building ? "Building…" : "Build my memory"}
+        </PrimaryButton>
+      )}
+
+      {stats && stats.total > 0 && (
+        <div style={{ marginBottom: 8 }}>
+          <div className="serif" style={{ fontSize: 18, fontWeight: 600, marginBottom: 14 }}>
+            <span style={{ color: "var(--accent)" }}>✦</span> Smriti learned <strong>{stats.total}</strong>{" "}
+            {stats.total === 1 ? "thing" : "things"} about you
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {MEMORY_KINDS.filter((k) => k.id !== "all").map((k) => (
+              <div key={k.id} style={{
+                display: "flex", alignItems: "center", gap: 7,
+                background: "var(--surface)", border: "1px solid var(--hairline)",
+                borderRadius: 6, padding: "8px 12px", fontSize: 12, color: "var(--ink-2)",
+              }}>
+                <span style={{ width: 7, height: 7, borderRadius: "50%", background: kindColor(k.id) }} />
+                {k.label}
+                <span className="mono" style={{ color: "var(--muted)" }}>{stats.byKind[k.id as MemoryKind] ?? 0}</span>
               </div>
-              <div style={{ fontSize: 12, color: "var(--muted)" }}>{item.desc}</div>
-            </div>
-            <button
-              onClick={() => startImport(item.platform)}
-              disabled={!!importing[item.platform]}
-              style={{
-                background: importing[item.platform] ? "var(--surface-2)" : "var(--accent)",
-                color: importing[item.platform] ? "var(--muted)" : "#f6f0e3",
-                border: "none", borderRadius: 4, padding: "7px 14px",
-                fontSize: 12, fontWeight: 600, cursor: importing[item.platform] ? "default" : "pointer",
-                whiteSpace: "nowrap", flexShrink: 0,
-              }}
-            >
-              {importing[item.platform] ? "Importing…" : "Start"}
-            </button>
+            ))}
           </div>
-        ))}
-
-        <div style={{
-          padding: "14px 18px",
-          background: "var(--surface)", border: "1px dashed var(--hairline)", borderRadius: 6,
-        }}>
-          <div className="serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>
-            Try the in-page sidebar
-          </div>
-          <p style={{ fontSize: 13, color: "var(--muted)", margin: 0 }}>
-            Open{" "}
-            <a href="https://claude.ai" target="_blank" rel="noopener" style={{ color: "var(--accent)" }}>claude.ai</a>,{" "}
-            <a href="https://chatgpt.com" target="_blank" rel="noopener" style={{ color: "var(--accent)" }}>chatgpt.com</a>,{" "}
-            or{" "}
-            <a href="https://gemini.google.com" target="_blank" rel="noopener" style={{ color: "var(--accent)" }}>gemini.google.com</a>{" "}
-            and look for the Smriti tab on the right edge.
-          </p>
         </div>
-      </div>
+      )}
 
-      <PrimaryButton onClick={onDone}>Open the viewer →</PrimaryButton>
+      {stats && stats.total === 0 && (
+        <div style={{
+          background: "var(--surface)", border: "1px solid var(--hairline)",
+          borderRadius: 6, padding: "14px 16px", marginBottom: 8,
+          fontSize: 13.5, color: "var(--ink-2)", fontStyle: "italic",
+        }}>
+          No history yet — Smriti learns as you chat.
+        </div>
+      )}
+
+      {stats && (
+        <>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, margin: "20px 0" }}>
+            {[
+              { href: "https://claude.ai/new", label: "Open claude.ai", color: "var(--provider-claude)" },
+              { href: "https://chatgpt.com/", label: "Open chatgpt.com", color: "var(--provider-chatgpt)" },
+            ].map((s) => (
+              <a key={s.href} href={s.href} target="_blank" rel="noopener" onClick={onDone} style={{
+                display: "flex", alignItems: "center", gap: 12,
+                padding: "12px 16px",
+                background: "var(--surface)", border: "1px solid var(--hairline)",
+                borderRadius: 6, textDecoration: "none", color: "var(--ink)",
+              }}>
+                <div style={{ width: 8, height: 8, borderRadius: 4, background: s.color, flexShrink: 0 }} />
+                <span style={{ fontSize: 14, fontWeight: 500 }}>{s.label}</span>
+                <span style={{ marginLeft: "auto", color: "var(--muted)", fontSize: 12 }}>↗</span>
+              </a>
+            ))}
+          </div>
+          <PrimaryButton onClick={seeMyMemory}>See my memory →</PrimaryButton>
+        </>
+      )}
     </div>
   );
 }
@@ -1922,6 +2028,23 @@ function PrimaryButton({ children, onClick, disabled }: { children: React.ReactN
       fontWeight: 600,
       letterSpacing: "0.01em",
       cursor: disabled ? "default" : "pointer",
+      fontFamily: "var(--sans)",
+    }}>{children}</button>
+  );
+}
+
+function GhostButton({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
+  return (
+    <button onClick={onClick} style={{
+      background: "transparent",
+      color: "var(--ink-2)",
+      border: "1px solid var(--hairline)",
+      borderRadius: 4,
+      padding: "10px 18px",
+      fontSize: 13.5,
+      fontWeight: 600,
+      letterSpacing: "0.01em",
+      cursor: "pointer",
       fontFamily: "var(--sans)",
     }}>{children}</button>
   );
@@ -2589,7 +2712,7 @@ function App() {
 
   // Short-circuit: onboarding owns the entire viewport when needed.
   if (needOnboarding) {
-    return <Onboarding helperState={helperState} onDone={finishOnboarding} />;
+    return <Onboarding onDone={finishOnboarding} />;
   }
 
   // Settings is also a full-page view.
