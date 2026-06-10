@@ -2338,6 +2338,95 @@ function kindColor(kind: string): string {
   }
 }
 
+// Surfaces the newest auto-extracted memories so users can quickly review
+// (and pin/delete) what auto-extraction just learned, without digging
+// through the full list. Dismiss hides it for the rest of the session.
+function RecentlyLearnedStrip({ refreshKey, onChanged }: { refreshKey: number; onChanged: () => void }) {
+  const [items, setItems] = useState<MemoryItem[]>([]);
+  const [dismissed, setDismissed] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+
+  useEffect(() => {
+    sendToHelper({ type: "list_memories", sort: "recent", limit: 30 })
+      .then((r) => {
+        if (!r.ok) return;
+        const recent = ((r.memories as MemoryItem[]) ?? [])
+          .filter((m) => m.source === "auto")
+          .slice(0, 15);
+        setItems(recent);
+      })
+      .catch(() => {});
+  }, [refreshKey]);
+
+  const onPin = useCallback((m: MemoryItem) => {
+    sendToHelper({ type: "pin_memory", id: m.id, pinned: !m.pinned }).then(() => {
+      setItems((prev) => prev.map((x) => x.id === m.id ? { ...x, pinned: !x.pinned } : x));
+      onChanged();
+    });
+  }, [onChanged]);
+
+  const onDelete = useCallback((id: string) => {
+    sendToHelper({ type: "delete_memory", id }).then(() => {
+      setItems((prev) => prev.filter((x) => x.id !== id));
+      onChanged();
+    });
+  }, [onChanged]);
+
+  if (dismissed || items.length === 0) return null;
+
+  return (
+    <div style={{
+      background: "var(--surface)", border: "1px solid var(--hairline)",
+      borderRadius: 8, padding: "12px 16px", marginBottom: 18,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ color: "var(--accent)" }}>✦</span>
+        <span className="smallcaps" style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: "0.08em", color: "var(--ink-2)" }}>
+          Recently learned
+        </span>
+        <span className="mono" style={{ fontSize: 11, color: "var(--muted)" }}>{items.length}</span>
+        <div style={{ flex: 1 }} />
+        <button onClick={() => setCollapsed((c) => !c)} style={{
+          background: "transparent", border: "none", color: "var(--muted)",
+          fontSize: 11, cursor: "pointer", fontFamily: "var(--sans)",
+        }}>{collapsed ? "Show" : "Hide"}</button>
+        <button onClick={() => setDismissed(true)} title="Dismiss" style={{
+          background: "transparent", border: "none", color: "var(--muted)",
+          fontSize: 14, cursor: "pointer", lineHeight: 1, fontFamily: "var(--sans)",
+        }}>×</button>
+      </div>
+      {!collapsed && (
+        <div style={{ display: "flex", flexDirection: "column", marginTop: 8 }}>
+          {items.map((m, i) => (
+            <div key={m.id} style={{
+              display: "flex", alignItems: "center", gap: 10, padding: "7px 0",
+              borderTop: i === 0 ? "none" : "1px solid var(--hairline)",
+            }}>
+              <span style={{
+                fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.09em",
+                color: kindColor(m.kind), padding: "1px 6px", borderRadius: 3, flexShrink: 0,
+                background: "color-mix(in srgb, " + kindColor(m.kind) + " 12%, transparent)",
+              }}>{m.kind}</span>
+              <div className="serif" style={{
+                fontSize: 13, color: "var(--ink)", flex: 1,
+                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+              }}>{m.text}</div>
+              <button onClick={() => onPin(m)} title={m.pinned ? "Unpin" : "Pin — always recalled"} style={{
+                background: "transparent", border: "none", cursor: "pointer", fontSize: 13,
+                opacity: m.pinned ? 1 : 0.35, flexShrink: 0,
+              }}>📌</button>
+              <button onClick={() => onDelete(m.id)} title="Delete" style={{
+                background: "transparent", border: "none", cursor: "pointer", color: "var(--muted)",
+                fontSize: 14, flexShrink: 0,
+              }}>×</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MemoryView({ nav }: { nav: (r: Route) => void }) {
   const [stats, setStats] = useState<MemoryStats | null>(null);
   const [memories, setMemories] = useState<MemoryItem[]>([]);
@@ -2480,6 +2569,8 @@ function MemoryView({ nav }: { nav: (r: Route) => void }) {
           }}
         />
       </div>
+
+      <RecentlyLearnedStrip refreshKey={total} onChanged={load} />
 
       {/* Memory list */}
       {memories.length === 0 ? (

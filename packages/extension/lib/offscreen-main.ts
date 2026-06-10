@@ -204,6 +204,7 @@ async function handleMessage(
         kind: m.kind as MemoryKind | "all" | undefined,
         query: m.query as string | undefined,
         limit: m.limit as number | undefined,
+        sort: m.sort as "default" | "recent" | undefined,
       });
       return { memories };
     }

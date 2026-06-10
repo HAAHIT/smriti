@@ -390,7 +390,7 @@ function rowToItem(r: Record<string, unknown>): MemoryItem {
   };
 }
 
-export function listMemories(opts: { kind?: MemoryKind | "all"; query?: string; limit?: number } = {}): MemoryItem[] {
+export function listMemories(opts: { kind?: MemoryKind | "all"; query?: string; limit?: number; sort?: "default" | "recent" } = {}): MemoryItem[] {
   const limit = Math.min(opts.limit ?? 500, 1000);
   const where: string[] = ["status = 'active'"];
   const params: (string | number)[] = [];
@@ -400,9 +400,12 @@ export function listMemories(opts: { kind?: MemoryKind | "all"; query?: string; 
     params.push("%" + normalize(opts.query) + "%");
   }
   params.push(limit);
+  const orderBy = opts.sort === "recent"
+    ? "created_at DESC"
+    : "pinned DESC, salience DESC, created_at DESC";
   const rows = dbAll(
     `SELECT * FROM memories WHERE ${where.join(" AND ")}
-     ORDER BY pinned DESC, salience DESC, created_at DESC LIMIT ?`,
+     ORDER BY ${orderBy} LIMIT ?`,
     params,
   );
   return rows.map(rowToItem);
