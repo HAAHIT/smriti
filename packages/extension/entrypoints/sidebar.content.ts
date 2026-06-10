@@ -436,6 +436,8 @@ function mountSidebar(): void {
       <span class="rc-mono">${state.msgsIndexed === null ? "—" : state.msgsIndexed} msgs indexed</span>
       <div class="rc-spacer"></div>
       <span class="rc-mono rc-muted-text">MiniLM-L6</span>
+      <span class="rc-divider">·</span>
+      <a class="rc-link" href="${reportIssueUrl(currentPlatform())}" target="_blank" rel="noopener">Report an issue ↗</a>
     `;
     panel.appendChild(footer);
 
@@ -875,6 +877,25 @@ function detectCurrentChat(url: string): { platform: Platform; platformConvId: s
     }
   } catch { /* malformed url */ }
   return null;
+}
+
+// Which of the three supported hosts we're running on. The content script
+// only matches these three, so this always resolves.
+function currentPlatform(): Platform {
+  const h = location.hostname;
+  if (h.endsWith("chatgpt.com")) return "chatgpt";
+  if (h.endsWith("gemini.google.com")) return "gemini";
+  return "claude";
+}
+
+// Pre-filled "report a broken site" GitHub issue link — selectors on these
+// sites change often and we have no telemetry, so the user is the sensor.
+function reportIssueUrl(platform: string): string {
+  const v = chrome.runtime.getManifest().version;
+  return (
+    `https://github.com/HAAHIT/smriti/issues/new?title=${encodeURIComponent(`[${platform}] `)}` +
+    `&body=${encodeURIComponent(`Platform: ${platform}\nExtension: v${v}\nWhat broke:\n`)}`
+  );
 }
 
 function providerBadge(p: string): { label: string; color: string } {
@@ -1438,6 +1459,8 @@ function injectStyles(shadow: ShadowRoot): void {
     }
     .rc-dot { width: 6px; height: 6px; border-radius: 50%; }
     .rc-dot-green { background: #1f7a64; }
+    .rc-link { color: var(--muted); text-decoration: none; white-space: nowrap; }
+    .rc-link:hover { color: var(--accent); }
   `;
   shadow.appendChild(style);
 }

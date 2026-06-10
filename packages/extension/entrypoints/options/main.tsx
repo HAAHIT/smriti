@@ -57,6 +57,16 @@ async function sendToHelper(req: AnyReq): Promise<AnyResp> {
   return { ok: true, type: req.type, id: "", ...((data && typeof data === "object") ? data : {}) };
 }
 
+// Pre-filled "report a broken site" GitHub issue link — selectors on these
+// sites change often and we have no telemetry, so the user is the sensor.
+function reportIssueUrl(platform: string): string {
+  const v = chrome.runtime.getManifest().version;
+  return (
+    `https://github.com/HAAHIT/smriti/issues/new?title=${encodeURIComponent(`[${platform}] `)}` +
+    `&body=${encodeURIComponent(`Platform: ${platform}\nExtension: v${v}\nWhat broke:\n`)}`
+  );
+}
+
 // ─── route ──────────────────────────────────────────────────────────────────
 
 interface Route {
@@ -2249,6 +2259,15 @@ function SettingsView({ totals, embed, nav }: {
         <SettingRow
           label="Extension version"
           right={<span className="mono" style={{ color: "var(--ink-2)" }}>{helperVersion || "—"}</span>}
+        />
+        <SettingRow
+          label="Found a broken site?"
+          right={
+            <a href={reportIssueUrl("options")} target="_blank" rel="noopener"
+              style={{ fontSize: 12.5, color: "var(--accent)", textDecoration: "none" }}>
+              Report an issue ↗
+            </a>
+          }
         />
       </Section>
 
