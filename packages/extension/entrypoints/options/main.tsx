@@ -2063,6 +2063,9 @@ function SettingsView({ totals, embed, nav }: {
   const [captureState, setCaptureState] = useState<Record<string, { last_seen_at: string | null; health: string }>>({});
   const [wipeConfirm, setWipeConfirm] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importMsg, setImportMsg] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [helperVersion, setHelperVersion] = useState<string>("");
 
   // Read the real paused-hosts list from extension storage (the source of
@@ -2110,7 +2113,16 @@ function SettingsView({ totals, embed, nav }: {
           archive.push({ meta: conv.meta, messages: conv.messages });
         }
       }
-      const blob = new Blob([JSON.stringify({ exported_at: new Date().toISOString(), conversations: archive }, null, 2)], { type: "application/json" });
+      const memRes = await sendToHelper({ type: "list_memories", limit: 1000 });
+      const memories = memRes.ok ? (memRes.memories as MemoryItem[] | undefined) ?? [] : [];
+
+      const payload = {
+        version: 2,
+        exported_at: new Date().toISOString(),
+        conversations: archive,
+        memories,
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -2119,6 +2131,56 @@ function SettingsView({ totals, embed, nav }: {
       URL.revokeObjectURL(url);
     } finally {
       setExporting(false);
+    }
+  };
+
+  const onImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-selecting the same file
+    if (!file) return;
+    setImporting(true);
+    setImportMsg(null);
+    try {
+      let data: unknown;
+      try {
+        data = JSON.parse(await file.text());
+      } catch {
+        setImportMsg("That file isn't valid JSON.");
+        return;
+      }
+      const obj = (data && typeof data === "object") ? data as Record<string, unknown> : {};
+      const memories = Array.isArray(obj.memories) ? obj.memories as Array<Record<string, unknown>> : null;
+      const conversations = Array.isArray(obj.conversations) ? obj.conversations : null;
+      if (!memories && !conversations) {
+        setImportMsg("Doesn't look like a Smriti export — no memories or conversations found.");
+        return;
+      }
+
+      let imported = 0;
+      for (const m of memories ?? []) {
+        try {
+          const r = await sendToHelper({
+            type: "add_memory",
+            text: m.text,
+            kind: m.kind,
+            source: m.source,
+            platform: m.source_platform ?? null,
+            conversation_id: m.source_conversation_id ?? null,
+            message_id: m.source_message_id ?? null,
+          });
+          if (!r.ok) continue;
+          imported++;
+          const id = (r.memory as { id?: string } | null)?.id;
+          if (m.pinned && id) {
+            await sendToHelper({ type: "pin_memory", id, pinned: true }).catch(() => {});
+          }
+        } catch {
+          // skip this memory, keep going
+        }
+      }
+      setImportMsg(`Imported ${imported} ${imported === 1 ? "memory" : "memories"}.`);
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -2193,20 +2255,43 @@ function SettingsView({ totals, embed, nav }: {
       {/* Export */}
       <Section title="Export">
         <div style={{ color: "var(--muted)", fontSize: 12, marginBottom: 10 }}>
-          Download every conversation Smriti has captured as a single JSON file. Use it for backup
-          or to migrate to another tool.
+          Download every conversation and memory Smriti has captured as a single JSON file. Use it
+          for backup, to migrate to another tool, or to restore your memory later via Import.
         </div>
-        <button onClick={onExport} disabled={exporting} style={{
-          background: "var(--surface)",
-          border: "1px solid var(--hairline-strong)",
-          borderRadius: 4,
-          padding: "8px 14px",
-          fontSize: 13,
-          fontFamily: "var(--sans)",
-          fontWeight: 500,
-          color: "var(--ink)",
-          cursor: exporting ? "default" : "pointer",
-        }}>{exporting ? "Exporting…" : "Export archive as JSON"}</button>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button onClick={onExport} disabled={exporting} style={{
+            background: "var(--surface)",
+            border: "1px solid var(--hairline-strong)",
+            borderRadius: 4,
+            padding: "8px 14px",
+            fontSize: 13,
+            fontFamily: "var(--sans)",
+            fontWeight: 500,
+            color: "var(--ink)",
+            cursor: exporting ? "default" : "pointer",
+          }}>{exporting ? "Exporting…" : "Export archive as JSON"}</button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/json"
+            onChange={onImportFile}
+            style={{ display: "none" }}
+          />
+          <button onClick={() => fileInputRef.current?.click()} disabled={importing} style={{
+            background: "var(--surface)",
+            border: "1px solid var(--hairline-strong)",
+            borderRadius: 4,
+            padding: "8px 14px",
+            fontSize: 13,
+            fontFamily: "var(--sans)",
+            fontWeight: 500,
+            color: "var(--ink)",
+            cursor: importing ? "default" : "pointer",
+          }}>{importing ? "Importing…" : "Import from JSON"}</button>
+        </div>
+        {importMsg && (
+          <div style={{ marginTop: 10, fontSize: 12, color: "var(--ink-2)", fontStyle: "italic" }}>{importMsg}</div>
+        )}
       </Section>
 
       {/* Wipe */}

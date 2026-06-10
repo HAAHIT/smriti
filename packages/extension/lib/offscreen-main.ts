@@ -213,7 +213,7 @@ async function handleMessage(
       const memory = addMemory(
         m.text as string,
         (m.kind as MemoryKind | undefined) ?? "fact",
-        "manual",
+        (m.source as "auto" | "manual" | undefined) ?? "manual",
         {
           platform: (m.platform as Platform | null | undefined) ?? null,
           conversationId: (m.conversation_id as string | null | undefined) ?? null,
