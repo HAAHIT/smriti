@@ -38,6 +38,9 @@ The memory layer lives in `packages/extension/lib/`:
 
 ## Quick start (dev)
 
+Chrome/Chromium only for now: Smriti's engine runs in an Offscreen Document,
+which Firefox doesn't support.
+
 ```bash
 npm install
 cd packages/extension

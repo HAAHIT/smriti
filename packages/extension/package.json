@@ -5,10 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "wxt",
-    "dev:firefox": "wxt -b firefox",
     "predev": "node scripts/fetch-model.mjs",
     "build": "wxt build",
-    "build:firefox": "wxt build -b firefox",
     "prebuild": "node scripts/fetch-model.mjs",
     "zip": "wxt zip",
     "test:extract": "tsx scripts/test-extract.ts",
