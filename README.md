@@ -41,10 +41,15 @@ The memory layer lives in `packages/extension/lib/`:
 ```bash
 npm install
 cd packages/extension
+npm run fetch:model    # vendor the embedding model + ONNX wasm (~25 MB, one-time)
 npm run test:extract   # extraction-quality assertions
 npm run build          # → .output/chrome-mv3 (load unpacked at chrome://extensions)
 npm run dev            # live dev server
 ```
+
+`fetch:model` also runs automatically before `build`/`dev` (idempotent — skips
+files that already exist), so the build is self-healing on a clean checkout.
+Once vendored, the extension makes zero network requests at runtime.
 
 Then open Claude/ChatGPT/Gemini, click the Smriti toolbar icon → **✦ Memory** →
 *Build my memory*, and start typing a prompt to see recall + one-click inject.

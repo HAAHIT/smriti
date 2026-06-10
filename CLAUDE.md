@@ -73,6 +73,8 @@ The loop: sidebar watches the host composer as you type → `recall_memories` RP
 ```
 npm install
 cd packages/extension
+npm run fetch:model      # vendor embedding model + ONNX wasm (~25 MB, one-time;
+                          # also runs automatically before build/dev)
 npm run test:extract     # extraction quality assertions
 npx tsc --noEmit -p tsconfig.json
 npm run build            # → .output/chrome-mv3  (load unpacked in chrome://extensions)
