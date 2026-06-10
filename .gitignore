@@ -7,6 +7,9 @@ dist/
 .env
 .env.local
 
+# Claude Code local-only settings (machine-specific permissions)
+.claude/settings.local.json
+
 # Helper runtime artifacts
 packages/helper/data/
 packages/helper/*.db

@@ -16,7 +16,7 @@ import type {
   FetchResponseMsg,
   HelperOutbound,
   NMResponse,
-} from "@recall/shared";
+} from "@smriti/shared";
 import { log } from "./logger.js";
 
 const MAX_MESSAGE_BYTES = 64 * 1024 * 1024;

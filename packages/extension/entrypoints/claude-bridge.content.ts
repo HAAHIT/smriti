@@ -16,7 +16,7 @@ export default defineContentScript({
         .sendMessage({ kind: "capture", events: ev.data.events })
         .catch((e) => {
           // eslint-disable-next-line no-console
-          console.warn("[recall] sendMessage failed", e);
+          console.warn("[smriti] sendMessage failed", e);
         });
     });
   },

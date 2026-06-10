@@ -1,5 +1,5 @@
 import { randomUUID, createHash } from "node:crypto";
-import type { CaptureEvent } from "@recall/shared";
+import type { CaptureEvent } from "@smriti/shared";
 import { getDb } from "./db.js";
 
 export function ingestEvents(events: CaptureEvent[]): { accepted: number } {

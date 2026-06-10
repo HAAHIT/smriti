@@ -10,7 +10,7 @@
 // defensive.
 
 import { defineContentScript } from "wxt/sandbox";
-import type { CaptureEvent } from "@recall/shared";
+import type { CaptureEvent } from "@smriti/shared";
 
 // Gemini renders turns as custom elements. We try several known names/attrs
 // in priority order — first match wins for each candidate element.

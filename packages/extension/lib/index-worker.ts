@@ -12,14 +12,22 @@
 
 import {
   embedBatch,
+  embedText,
   getPendingMessages,
   storeEmbedding,
   countEmbedStatus,
 } from "./embeddings.js";
+import {
+  extractionSweep,
+  getPendingMemoryEmbeddings,
+  storeMemoryEmbedding,
+} from "./memory.js";
 
 const TICK_INTERVAL_MS = 5_000;
 const IDLE_INTERVAL_MS = 30_000;
 const BATCH_SIZE = 16;
+const MEMORY_BATCH_SIZE = 12;
+const EXTRACT_BATCH_SIZE = 64;
 const MAX_CONSECUTIVE_ERRORS = 5;
 
 let running = false;
@@ -57,36 +65,62 @@ async function tick(): Promise<void> {
     return;
   }
 
+  // ── Memory extraction (cheap, no model) — runs every tick so memory builds
+  //    itself from both live capture and imported history. ──
+  let extracted = 0;
+  try {
+    extracted = extractionSweep(EXTRACT_BATCH_SIZE).created;
+  } catch (e) {
+    console.warn("[smriti:index] extraction sweep failed", String(e));
+  }
+
   const pending = getPendingMessages(BATCH_SIZE);
-  if (pending.length === 0) {
+  const pendingMem = getPendingMemoryEmbeddings(MEMORY_BATCH_SIZE);
+
+  if (pending.length === 0 && pendingMem.length === 0) {
     consecutiveErrors = 0;
-    scheduleNext(IDLE_INTERVAL_MS);
+    // If extraction just created memories, come back promptly to embed them.
+    scheduleNext(extracted > 0 ? TICK_INTERVAL_MS : IDLE_INTERVAL_MS);
     return;
   }
 
   const t0 = Date.now();
   try {
-    const vecs = await embedBatch(pending.map((p) => p.content_text));
     let batchStored = 0;
-    for (let i = 0; i < pending.length; i++) {
-      const row = pending[i]!;
-      const v = vecs[i];
-      if (!v) continue;
+    if (pending.length > 0) {
+      const vecs = await embedBatch(pending.map((p) => p.content_text));
+      for (let i = 0; i < pending.length; i++) {
+        const row = pending[i]!;
+        const v = vecs[i];
+        if (!v) continue;
+        try {
+          storeEmbedding(row.id, v);
+          totalEmbedded++;
+          batchStored++;
+        } catch (e) {
+          console.warn("[smriti:index] store failed", row.id, String(e));
+        }
+      }
+    }
+
+    // ── Embed pending memories (smaller, separate store) ──
+    let memStored = 0;
+    for (const mem of pendingMem) {
       try {
-        storeEmbedding(row.id, v);
-        totalEmbedded++;
-        batchStored++;
+        const v = await embedText(mem.text);
+        storeMemoryEmbedding(mem.id, v);
+        memStored++;
       } catch (e) {
-        console.warn("[smriti:index] store failed", row.id, String(e));
+        console.warn("[smriti:index] memory embed failed", mem.id, String(e));
       }
     }
     consecutiveErrors = 0;
 
-    if (totalEmbedded % 50 === 0 || pending.length < BATCH_SIZE) {
+    if (totalEmbedded % 50 === 0 || pending.length < BATCH_SIZE || memStored > 0) {
       const s = countEmbedStatus();
       console.log(
-        `[smriti:index] batch=${batchStored} ms=${Date.now() - t0}` +
-        ` embedded=${s.embedded} pending=${s.pending}`,
+        `[smriti:index] msgs=${batchStored} mem=${memStored} extracted=${extracted}` +
+        ` ms=${Date.now() - t0} embedded=${s.embedded} pending=${s.pending}`,
       );
     }
   } catch (e) {

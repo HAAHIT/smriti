@@ -1,0 +1,9 @@
+{
+    "name":  "com.smriti.helper",
+    "description":  "Smriti helper - local AI conversation archive.",
+    "path":  "D:\\Projects\\smriti\\packages\\helper\\smriti-helper.bat",
+    "type":  "stdio",
+    "allowed_origins":  [
+                            "chrome-extension://khaahjdfeipnnmaabojbaifhlfemepif/"
+                        ]
+}

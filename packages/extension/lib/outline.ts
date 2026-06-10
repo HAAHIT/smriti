@@ -14,7 +14,7 @@
 
 import { dbAll } from "./db.js";
 import { EMBED_DIMS, EMBED_MODEL } from "./embeddings.js";
-import type { OutlineSegment } from "@recall/shared";
+import type { OutlineSegment } from "@smriti/shared";
 
 const FORCE_BOUNDARY = 10;
 const MIN_SEGMENT = 2;

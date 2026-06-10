@@ -12,7 +12,7 @@
 //
 // Parsing is defensive: we accept several shape variants for messages.
 
-import type { CaptureEvent } from "@recall/shared";
+import type { CaptureEvent } from "@smriti/shared";
 import { proxyFetch } from "../nm.js";
 
 const BASE = "https://claude.ai";

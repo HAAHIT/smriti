@@ -10,7 +10,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readdirSync, statSync, openSync, readSync, closeSync } from "node:fs";
-import type { CaptureEvent, Role } from "@recall/shared";
+import type { CaptureEvent, Role } from "@smriti/shared";
 import { getDb } from "./db.js";
 import { ingestEvents } from "./ingest.js";
 import { log } from "./logger.js";

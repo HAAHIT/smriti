@@ -1,5 +1,5 @@
 {
-  "name": "recall",
+  "name": "smriti",
   "private": true,
   "version": "0.0.1",
   "description": "Local-first archive + search + reference layer for AI conversations across Claude, ChatGPT, Gemini, and Claude Code.",
@@ -9,13 +9,16 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
-    "dev:extension": "npm run dev --workspace=@recall/extension"
+    "dev:extension": "npm run dev --workspace=@smriti/extension"
   },
   "devDependencies": {
-    "typescript": "^5.6.3",
-    "@types/node": "^22.9.0"
+    "@types/node": "^22.9.0",
+    "typescript": "^5.6.3"
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "smriti": "file:"
   }
 }

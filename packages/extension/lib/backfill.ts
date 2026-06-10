@@ -6,7 +6,7 @@
 //
 // Only Claude backfill is implemented; ChatGPT/Gemini are capture-only.
 
-import type { BackfillProgress, BackfillState, Platform, BackfillJobStatus, CaptureEvent } from "@recall/shared";
+import type { BackfillProgress, BackfillState, Platform, BackfillJobStatus, CaptureEvent } from "@smriti/shared";
 import { dbAll, dbGet, dbRun, markDirty } from "./db.js";
 import { ingestEvents } from "./ingest.js";
 

@@ -17,7 +17,7 @@
 // nicer once indexing finishes.
 
 import { getDb } from "./db.js";
-import type { OutlineSegment } from "@recall/shared";
+import type { OutlineSegment } from "@smriti/shared";
 import { EMBED_DIMS, EMBED_MODEL } from "./embeddings.js";
 
 const FORCE_BOUNDARY = 10;     // never let a segment grow past this many messages

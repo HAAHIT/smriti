@@ -145,4 +145,74 @@ CREATE TABLE message_embeddings (
 CREATE INDEX idx_embed_model ON message_embeddings(model);
 `,
   ],
+  [
+    "003_memory.sql",
+    `
+-- The memory layer: atomic, durable facts distilled from the user's own
+-- conversations. This is what makes every AI tool "remember" the user.
+CREATE TABLE memories (
+  id                     TEXT PRIMARY KEY,
+  kind                   TEXT NOT NULL,            -- identity|preference|project|decision|fact
+  text                   TEXT NOT NULL,
+  norm_text              TEXT NOT NULL,            -- normalized for dedup
+  source                 TEXT NOT NULL DEFAULT 'auto', -- auto|manual
+  source_platform        TEXT,
+  source_conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+  source_message_id      TEXT REFERENCES messages(id) ON DELETE SET NULL,
+  created_at             TEXT NOT NULL,
+  updated_at             TEXT NOT NULL,
+  last_used_at           TEXT,
+  use_count              INTEGER NOT NULL DEFAULT 0,
+  pinned                 INTEGER NOT NULL DEFAULT 0,
+  salience               REAL NOT NULL DEFAULT 0.5,
+  status                 TEXT NOT NULL DEFAULT 'active',
+  UNIQUE (norm_text)
+);
+
+CREATE INDEX idx_mem_kind    ON memories(kind);
+CREATE INDEX idx_mem_status  ON memories(status, pinned, last_used_at DESC);
+CREATE INDEX idx_mem_created ON memories(created_at DESC);
+
+-- Embeddings for semantic recall, mirroring message_embeddings.
+CREATE TABLE memory_embeddings (
+  memory_id  TEXT PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,
+  model      TEXT NOT NULL,
+  dims       INTEGER NOT NULL,
+  vec        BLOB NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX idx_mem_embed_model ON memory_embeddings(model);
+
+-- Keyword recall over memories.
+CREATE VIRTUAL TABLE memories_fts USING fts5(
+  text,
+  kind UNINDEXED,
+  content='memories',
+  content_rowid='rowid',
+  tokenize='porter unicode61'
+);
+
+CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
+  INSERT INTO memories_fts(rowid, text, kind) VALUES (new.rowid, new.text, new.kind);
+END;
+
+CREATE TRIGGER memories_ad AFTER DELETE ON memories BEGIN
+  INSERT INTO memories_fts(memories_fts, rowid, text, kind)
+  VALUES ('delete', old.rowid, old.text, old.kind);
+END;
+
+CREATE TRIGGER memories_au AFTER UPDATE ON memories BEGIN
+  INSERT INTO memories_fts(memories_fts, rowid, text, kind)
+  VALUES ('delete', old.rowid, old.text, old.kind);
+  INSERT INTO memories_fts(rowid, text, kind) VALUES (new.rowid, new.text, new.kind);
+END;
+
+-- Bookkeeping for the memory subsystem (last extraction sweep, etc.).
+CREATE TABLE memory_meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT
+);
+`,
+  ],
 ];

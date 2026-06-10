@@ -5,7 +5,7 @@ import type {
   NMResponse,
   SearchHit,
   ConversationMessageRow,
-} from "@recall/shared";
+} from "@smriti/shared";
 import { ingestEvents } from "./ingest.js";
 import { scanClaudeCode } from "./claude-code.js";
 import { startBackfill, getBackfillStatuses } from "./backfill/index.js";
@@ -17,7 +17,7 @@ import {
   searchByVector,
 } from "./embeddings.js";
 import { getOutline } from "./outline.js";
-import type { ConversationMeta, RecentConversation } from "@recall/shared";
+import type { ConversationMeta, RecentConversation } from "@smriti/shared";
 
 const HELPER_VERSION = "0.0.1";
 

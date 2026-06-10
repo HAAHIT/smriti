@@ -36,7 +36,19 @@ import {
   cancelBackfill,
   getBackfillStatuses,
 } from "../lib/backfill.js";
-import type { CaptureEvent, Platform, NMResponse } from "@recall/shared";
+import {
+  recallMemories,
+  listMemories,
+  addMemory,
+  editMemory,
+  setMemoryPinned,
+  deleteMemory,
+  memoryStats,
+  touchMemories,
+  extractionSweep,
+  pendingExtractionCount,
+} from "../lib/memory.js";
+import type { CaptureEvent, Platform, MemoryKind, NMResponse } from "@smriti/shared";
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 
@@ -176,6 +188,78 @@ async function handleMessage(
     case "backfill_status": {
       const jobs = getBackfillStatuses(m.platform as Platform | undefined);
       return { jobs };
+    }
+
+    // ─── Memory layer ─────────────────────────────────────────────────────
+    case "recall_memories": {
+      const memories = await recallMemories(
+        m.query as string,
+        (m.limit as number | undefined) ?? 6,
+      );
+      return { memories };
+    }
+
+    case "list_memories": {
+      const memories = listMemories({
+        kind: m.kind as MemoryKind | "all" | undefined,
+        query: m.query as string | undefined,
+        limit: m.limit as number | undefined,
+      });
+      return { memories };
+    }
+
+    case "add_memory": {
+      const memory = addMemory(
+        m.text as string,
+        (m.kind as MemoryKind | undefined) ?? "fact",
+        "manual",
+        {
+          platform: (m.platform as Platform | null | undefined) ?? null,
+          conversationId: (m.conversation_id as string | null | undefined) ?? null,
+          messageId: (m.message_id as string | null | undefined) ?? null,
+        },
+      );
+      return { memory };
+    }
+
+    case "edit_memory": {
+      const ok = editMemory(m.id as string, m.text as string, m.kind as MemoryKind | undefined);
+      return { ok };
+    }
+
+    case "pin_memory": {
+      setMemoryPinned(m.id as string, !!m.pinned);
+      return { ok: true };
+    }
+
+    case "delete_memory": {
+      deleteMemory(m.id as string);
+      return { ok: true };
+    }
+
+    case "memory_stats": {
+      return memoryStats();
+    }
+
+    case "touch_memories": {
+      touchMemories((m.ids as string[]) ?? []);
+      return { ok: true };
+    }
+
+    // Force a synchronous extraction pass over the whole backlog so the user
+    // sees their memory materialize immediately (the "Build my memory" button).
+    case "build_memory_now": {
+      let created = 0;
+      let processed = 0;
+      let guard = 0;
+      while (pendingExtractionCount() > 0 && guard < 400) {
+        const r = extractionSweep(256);
+        created += r.created;
+        processed += r.processed;
+        if (r.processed === 0) break;
+        guard++;
+      }
+      return { created, processed, stats: memoryStats() };
     }
 
     case "wipe_archive": {

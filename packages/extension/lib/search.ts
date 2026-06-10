@@ -9,7 +9,7 @@
 
 import { dbAll, dbGet, getDb, markDirty } from "./db.js";
 import { embedText, searchByVector } from "./embeddings.js";
-import type { SearchHit } from "@recall/shared";
+import type { SearchHit } from "@smriti/shared";
 
 const RRF_K = 60;
 const FTS_K = 40;
@@ -255,6 +255,9 @@ export function wipeArchive(): number {
   const db = getDb();
   db.run("BEGIN");
   try {
+    db.run("DELETE FROM memory_embeddings");
+    db.run("DELETE FROM memories");
+    db.run("DELETE FROM memory_meta");
     db.run("DELETE FROM message_embeddings");
     db.run("DELETE FROM notes");
     db.run("DELETE FROM conversation_tags");
@@ -266,6 +269,7 @@ export function wipeArchive(): number {
     db.run("DELETE FROM daily_stats");
     db.run("DELETE FROM ingest_state");
     db.run("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')");
+    db.run("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')");
     db.run("COMMIT");
   } catch (e) {
     db.run("ROLLBACK");

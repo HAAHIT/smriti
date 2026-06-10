@@ -9,7 +9,7 @@
 //   • Toolbar icon → opens options page.
 
 import { defineBackground } from "wxt/sandbox";
-import type { CaptureEvent, Platform } from "@recall/shared";
+import type { CaptureEvent, Platform } from "@smriti/shared";
 
 const OFFSCREEN_URL = chrome.runtime.getURL("/offscreen.html");
 

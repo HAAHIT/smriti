@@ -1,9 +1,0 @@
-﻿{
-    "name":  "com.recall.helper",
-    "description":  "Recall helper - local AI conversation archive.",
-    "path":  "D:\\Projects\\recall\\packages\\helper\\recall-helper.bat",
-    "type":  "stdio",
-    "allowed_origins":  [
-                            "chrome-extension://khaahjdfeipnnmaabojbaifhlfemepif/"
-                        ]
-}

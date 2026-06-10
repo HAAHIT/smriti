@@ -36,15 +36,17 @@
 
 import { defineContentScript } from "wxt/sandbox";
 import { isInjectMessage } from "../capture/messages";
+import { injectText, formatMemoryBlock, findComposer } from "../lib/inject";
 import type {
   CaptureEvent,
   CaptureEventMessageAppended,
   ConversationMessageRow,
   ConversationMeta,
+  MemoryRecallHit,
   OutlineSegment,
   Platform,
   SearchHit,
-} from "@recall/shared";
+} from "@smriti/shared";
 
 const SMRITI_PANEL_ID = "smriti-sidebar-root";
 const COLLAPSED_STATE_KEY = "smriti:sidebar:collapsed";
@@ -78,6 +80,8 @@ interface PanelState {
   proactiveQuery: string | null;
   msgsIndexed: number | null;
   currentChat: CurrentChat | null;
+  memories: MemoryRecallHit[];
+  toast: string | null;
 }
 
 export default defineContentScript({
@@ -155,11 +159,16 @@ function mountSidebar(): void {
     proactiveQuery: null,
     msgsIndexed: null,
     currentChat: null,
+    memories: [],
+    toast: null,
   };
 
   let render: () => void = () => {};
   let proactiveTimer: number | null = null;
   let searchSeq = 0;
+  // Set true while we inject, so the composer's resulting input event doesn't
+  // re-trigger recall on the text we just wrote.
+  let suppressComposerInput = false;
 
   function setState(next: Partial<PanelState>): void {
     Object.assign(state, next);
@@ -169,11 +178,24 @@ function mountSidebar(): void {
   async function runSearch(q: string): Promise<void> {
     const query = q.trim();
     if (!query) {
-      setState({ hero: null, others: [], loading: false });
+      setState({ hero: null, others: [], loading: false, memories: [] });
       return;
     }
     const mySeq = ++searchSeq;
     setState({ loading: true });
+
+    // Recall relevant memories in parallel — this is the hero surface. We don't
+    // block the conversation results on it.
+    void sendToHelper({ type: "recall_memories", query, limit: 5 })
+      .then((r) => {
+        if (mySeq !== searchSeq) return;
+        const mem = r.memories as MemoryRecallHit[] | undefined;
+        if (r.ok && Array.isArray(mem)) {
+          setState({ memories: mem });
+        }
+      })
+      .catch(() => {});
+
     try {
       const res = await sendToHelper({ type: "search", query, limit: MAX_RESULTS });
       if (mySeq !== searchSeq) return; // a newer search superseded us
@@ -274,6 +296,45 @@ function mountSidebar(): void {
     }, PROACTIVE_DEBOUNCE_MS);
   });
 
+  // ─── Live composer watch (the core loop) ───
+  // Recall memories from what the user is typing into the host AI's message box
+  // — BEFORE they send — so they can inject context into the very prompt being
+  // written. This is what turns Smriti from an archive into a memory layer.
+  let composerEl: HTMLElement | null = null;
+  let composerTimer: number | null = null;
+  function readComposerText(el: HTMLElement): string {
+    return el.tagName === "TEXTAREA" || el.tagName === "INPUT"
+      ? (el as HTMLTextAreaElement).value
+      : el.innerText || el.textContent || "";
+  }
+  function onComposerInput(): void {
+    if (suppressComposerInput) return;        // our own injection fired this
+    if (!composerEl || state.query.trim()) return; // sidebar search takes priority
+    const text = readComposerText(composerEl).trim();
+    if (composerTimer !== null) clearTimeout(composerTimer);
+    if (text.length < PROACTIVE_MIN_CHARS) {
+      if (state.proactiveQuery) setState({ proactiveQuery: null, memories: [], hero: null, others: [] });
+      return;
+    }
+    composerTimer = window.setTimeout(() => {
+      if (state.query.trim()) return;
+      const q = text.slice(0, 200);
+      setState({ proactiveQuery: q });
+      void runSearch(q);
+    }, PROACTIVE_DEBOUNCE_MS);
+  }
+  function attachComposer(): void {
+    const el = findComposer();
+    if (el && el !== composerEl) {
+      composerEl?.removeEventListener("input", onComposerInput);
+      composerEl = el;
+      composerEl.addEventListener("input", onComposerInput);
+    }
+  }
+  attachComposer();
+  // Re-attach across SPA navigation / editor remounts. Cheap.
+  setInterval(attachComposer, 1500);
+
   render = () => {
     ui.innerHTML = "";
     ui.appendChild(state.collapsed ? renderCollapsed() : renderExpanded());
@@ -337,6 +398,13 @@ function mountSidebar(): void {
     const body = document.createElement("div");
     body.className = "rc-body";
 
+    // ── Memory recall (the hero) — whenever we have relevant memories for the
+    //    current draft or query, surface them at the very top with one-click
+    //    injection into the composer. ──
+    if (state.memories.length > 0) {
+      body.appendChild(renderMemoryRecall(state.memories));
+    }
+
     // ── Current chat outline (always at the top when we know which chat
     //    the user is in and we have it in our archive). Hidden during an
     //    active search to keep the focus on results. ──
@@ -371,6 +439,13 @@ function mountSidebar(): void {
     `;
     panel.appendChild(footer);
 
+    if (state.toast) {
+      const toast = document.createElement("div");
+      toast.className = "rc-toast";
+      toast.textContent = state.toast;
+      panel.appendChild(toast);
+    }
+
     return panel;
   }
 
@@ -379,14 +454,15 @@ function mountSidebar(): void {
     const el = document.createElement("div");
     el.className = "rc-intro";
     el.innerHTML = `
-      <div class="rc-smallcaps rc-muted-text">No active query</div>
+      <div class="rc-smallcaps rc-muted-text">Your AI remembers you</div>
       <div class="rc-intro-blurb">
-        When you send a message, Smriti searches your local archive for
-        related past conversations across Claude, ChatGPT, Gemini, and
-        Claude Code — so you don't ask the same thing twice.
+        Start typing a message and Smriti surfaces what you've already
+        established — your tools, decisions, and projects — so you can drop
+        it into the prompt in one click. No more re-explaining yourself to
+        every AI.
       </div>
       <div class="rc-divider-h"></div>
-      <div class="rc-smallcaps rc-muted-text">Try a vague query</div>
+      <div class="rc-smallcaps rc-muted-text">Or search your memory</div>
       <div class="rc-suggestions">
         ${["embeddings model choice", "rust enum bug", "rate limited backfill", "outline algorithm"]
           .map((s) => `<button class="rc-suggest" data-q="${s.replace(/"/g, "&quot;")}">${s}</button>`)
@@ -484,6 +560,76 @@ function mountSidebar(): void {
         `).join("")}
       </div>
     `;
+  }
+
+  // ─── Memory recall (the hero) ───
+  // The thing that makes "your AI remembers you" real: relevant memories with
+  // one-click injection straight into the composer.
+  async function injectMemories(hits: MemoryRecallHit[]): Promise<void> {
+    if (hits.length === 0) return;
+    const block = formatMemoryBlock(hits.map((h) => ({ text: h.text })));
+    suppressComposerInput = true;
+    const ok = injectText(block);
+    window.setTimeout(() => { suppressComposerInput = false; }, 400);
+    if (ok) {
+      void sendToHelper({ type: "touch_memories", ids: hits.map((h) => h.id) }).catch(() => {});
+      flashToast(hits.length === 1 ? "Added to your prompt ✓" : `Added ${hits.length} memories ✓`);
+    } else {
+      flashToast("Click your message box once, then retry.");
+    }
+  }
+
+  let toastTimer: number | null = null;
+  function flashToast(msg: string): void {
+    setState({ toast: msg });
+    if (toastTimer !== null) clearTimeout(toastTimer);
+    toastTimer = window.setTimeout(() => setState({ toast: null }), 2800);
+  }
+
+  function renderMemoryRecall(hits: MemoryRecallHit[]): HTMLElement {
+    const wrap = document.createElement("div");
+    wrap.className = "rc-mem-wrap";
+    const count = hits.length;
+    wrap.innerHTML = `
+      <div class="rc-mem-header">
+        <span class="rc-spark">✦</span>
+        <span class="rc-smallcaps rc-accent">Smriti remembers</span>
+        <div class="rc-spacer"></div>
+        <span class="rc-mono rc-muted-text">${count}</span>
+      </div>
+      <div class="rc-mem-list">
+        ${hits.map((h, i) => {
+          const meta = memoryKindMeta(h.kind);
+          const prov = h.source_platform ? providerBadge(h.source_platform) : null;
+          return `
+            <div class="rc-mem">
+              <div class="rc-mem-top">
+                <span class="rc-mem-kind" style="--k:${meta.color}">${meta.label}</span>
+                ${h.pinned ? '<span class="rc-mem-pin" title="Pinned">📌</span>' : ""}
+                <div class="rc-spacer"></div>
+                <button class="rc-mem-inject" data-idx="${i}" title="Add just this to your prompt">+ inject</button>
+              </div>
+              <div class="rc-mem-text">${escapeHtml(h.text)}</div>
+              ${prov ? `<div class="rc-mem-src"><span class="rc-provider" style="--p:${prov.color}"></span>${prov.label} · ${formatDate(h.created_at)}</div>` : ""}
+            </div>
+          `;
+        }).join("")}
+      </div>
+      <button class="rc-cta rc-mem-cta" data-inject-all>
+        Inject ${count === 1 ? "this" : `all ${count}`} into prompt →
+      </button>
+    `;
+    wrap.querySelectorAll<HTMLButtonElement>(".rc-mem-inject").forEach((b) => {
+      b.addEventListener("click", () => {
+        const i = Number(b.getAttribute("data-idx"));
+        const h = hits[i];
+        if (h) void injectMemories([h]);
+      });
+    });
+    wrap.querySelector<HTMLButtonElement>("[data-inject-all]")?.addEventListener("click", () => {
+      void injectMemories(hits);
+    });
+    return wrap;
   }
 
   // ─── Hero card ───
@@ -718,6 +864,16 @@ function providerBadge(p: string): { label: string; color: string } {
   }
 }
 
+function memoryKindMeta(kind: string): { label: string; color: string } {
+  switch (kind) {
+    case "identity":   return { label: "identity",   color: "#8b3a2f" };
+    case "preference": return { label: "preference", color: "#1f7a64" };
+    case "project":    return { label: "project",    color: "#3b6cb5" };
+    case "decision":   return { label: "decision",   color: "#9a6b1f" };
+    default:           return { label: "fact",       color: "#6d5fa6" };
+  }
+}
+
 function formatDate(iso: string): string {
   try {
     const d = new Date(iso);
@@ -838,6 +994,7 @@ function injectStyles(shadow: ShadowRoot): void {
       font-family: var(--sans);
       display: flex;
       flex-direction: column;
+      position: relative;
       border-left: 2px solid var(--hairline-strong);
       box-shadow: -8px 0 24px rgba(40,30,20,0.08);
       font-size: 14px;
@@ -1149,6 +1306,99 @@ function injectStyles(shadow: ShadowRoot): void {
       color: var(--muted);
       font-style: italic;
       line-height: 1.45;
+    }
+
+    /* ── Memory recall (hero) ── */
+    .rc-mem-wrap {
+      padding: 16px 18px 4px;
+    }
+    .rc-mem-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .rc-mem-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .rc-mem {
+      padding: 10px 12px;
+      background: var(--surface);
+      border: 1px solid var(--hairline-strong);
+      border-radius: 5px;
+      border-left: 3px solid var(--accent-soft);
+    }
+    .rc-mem-top {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 6px;
+    }
+    .rc-mem-kind {
+      font-family: var(--sans);
+      font-size: 9.5px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      color: var(--k, var(--accent));
+      padding: 1px 6px;
+      border-radius: 3px;
+      background: color-mix(in srgb, var(--k, var(--accent)) 12%, transparent);
+    }
+    .rc-mem-pin { font-size: 10px; }
+    .rc-mem-inject {
+      background: transparent;
+      border: 1px solid var(--hairline-strong);
+      color: var(--accent);
+      cursor: pointer;
+      font-family: var(--mono);
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      transition: background 0.1s, border-color 0.1s;
+    }
+    .rc-mem-inject:hover { background: var(--surface-2); border-color: var(--accent-soft); }
+    .rc-mem-text {
+      font-family: var(--serif);
+      font-size: 13px;
+      line-height: 1.4;
+      color: var(--ink);
+    }
+    .rc-mem-src {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 6px;
+      font-size: 10px;
+      color: var(--muted);
+      font-family: var(--mono);
+    }
+    .rc-mem-cta { margin-bottom: 4px; }
+
+    /* ── Toast ── */
+    .rc-toast {
+      position: absolute;
+      bottom: 52px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--ink);
+      color: var(--bg);
+      font-family: var(--sans);
+      font-size: 12px;
+      font-weight: 500;
+      padding: 8px 16px;
+      border-radius: 20px;
+      box-shadow: 0 4px 16px rgba(40,30,20,0.25);
+      animation: rcToastIn 0.18s ease-out;
+      white-space: nowrap;
+      z-index: 10;
+    }
+    @keyframes rcToastIn {
+      from { opacity: 0; transform: translateX(-50%) translateY(6px); }
+      to   { opacity: 1; transform: translateX(-50%) translateY(0); }
     }
 
     /* ── Footer ── */

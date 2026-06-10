@@ -2,7 +2,7 @@
 // Replaces better-sqlite3 prepared statements with sql.js helpers.
 
 import { randomUUID, createHash } from "./crypto.js";
-import type { CaptureEvent } from "@recall/shared";
+import type { CaptureEvent } from "@smriti/shared";
 import { dbGet, dbRun, getDb, markDirty } from "./db.js";
 
 export function ingestEvents(events: CaptureEvent[]): { accepted: number } {

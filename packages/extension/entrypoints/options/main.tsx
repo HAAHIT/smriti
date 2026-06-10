@@ -28,10 +28,13 @@ import type {
   BackfillProgress,
   ConversationMessageRow,
   ConversationMeta,
+  MemoryItem,
+  MemoryKind,
+  MemoryStats,
   OutlineSegment,
   RecentConversation,
   SearchHit,
-} from "@recall/shared";
+} from "@smriti/shared";
 
 // ─── messaging ───────────────────────────────────────────────────────────────
 
@@ -57,7 +60,7 @@ async function sendToHelper(req: AnyReq): Promise<AnyResp> {
 // ─── route ──────────────────────────────────────────────────────────────────
 
 interface Route {
-  view: "home" | "conversation" | "welcome" | "settings";
+  view: "home" | "conversation" | "welcome" | "settings" | "memory";
   conversationId?: string;
   msgId?: string;
   q?: string;
@@ -78,6 +81,7 @@ function parseHash(hash: string): Route {
   }
   if (segs[0] === "welcome") return { view: "welcome" };
   if (segs[0] === "settings") return { view: "settings" };
+  if (segs[0] === "memory") return { view: "memory" };
   return { view: "home" };
 }
 
@@ -95,6 +99,8 @@ function useRoute(): [Route, (r: Route) => void] {
       location.hash = "/welcome";
     } else if (r.view === "settings") {
       location.hash = "/settings";
+    } else if (r.view === "memory") {
+      location.hash = "/memory";
     } else if (r.conversationId) {
       const p = new URLSearchParams();
       if (r.msgId) p.set("msg", r.msgId);
@@ -503,6 +509,8 @@ function TopBar({
   onCycleTheme,
   helperOk,
   onOpenSettings,
+  onOpenMemory,
+  memoryCount,
 }: {
   query: string;
   setQuery: (s: string) => void;
@@ -513,6 +521,8 @@ function TopBar({
   onCycleTheme: () => void;
   helperOk: boolean;
   onOpenSettings: () => void;
+  onOpenMemory: () => void;
+  memoryCount: number;
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
 
@@ -604,6 +614,34 @@ function TopBar({
           <span className="kbd">/</span>
         )}
       </div>
+      <button
+        type="button"
+        onClick={onOpenMemory}
+        title="Your memory — facts that travel across every AI"
+        style={{
+          background: "var(--surface)",
+          border: "1px solid var(--hairline-strong)",
+          borderRadius: 4,
+          padding: "5px 12px",
+          fontSize: 12,
+          color: "var(--ink-2)",
+          cursor: "pointer",
+          fontFamily: "var(--sans)",
+          fontWeight: 600,
+          display: "flex",
+          alignItems: "center",
+          gap: 7,
+        }}
+      >
+        <span style={{ color: "var(--accent)" }}>✦</span>
+        Memory
+        {memoryCount > 0 && (
+          <span className="mono" style={{
+            fontSize: 10.5, color: "var(--muted)",
+            background: "var(--surface-2)", borderRadius: 8, padding: "0 6px",
+          }}>{memoryCount}</span>
+        )}
+      </button>
       <button
         type="button"
         onClick={onCycleTheme}
@@ -2154,6 +2192,278 @@ function Toggle({ on, onChange }: { on: boolean; onChange: () => void }) {
   );
 }
 
+// ─── MemoryView ──────────────────────────────────────────────────────────────
+// "Your memory" — the durable facts Smriti has distilled from your chats, that
+// now travel with you across every AI tool. Fully user-owned: edit, pin, delete.
+
+const MEMORY_KINDS: Array<{ id: MemoryKind | "all"; label: string }> = [
+  { id: "all",        label: "All" },
+  { id: "identity",   label: "Identity" },
+  { id: "preference", label: "Preferences" },
+  { id: "project",    label: "Projects" },
+  { id: "decision",   label: "Decisions" },
+  { id: "fact",       label: "Facts" },
+];
+
+function kindColor(kind: string): string {
+  switch (kind) {
+    case "identity":   return "var(--accent)";
+    case "preference": return "var(--provider-chatgpt)";
+    case "project":    return "var(--provider-gemini)";
+    case "decision":   return "#9a6b1f";
+    default:           return "var(--provider-code)";
+  }
+}
+
+function MemoryView({ nav }: { nav: (r: Route) => void }) {
+  const [stats, setStats] = useState<MemoryStats | null>(null);
+  const [memories, setMemories] = useState<MemoryItem[]>([]);
+  const [kind, setKind] = useState<MemoryKind | "all">("all");
+  const [q, setQ] = useState("");
+  const [building, setBuilding] = useState(false);
+  const [adding, setAdding] = useState("");
+
+  const load = useCallback(() => {
+    sendToHelper({ type: "list_memories", kind, query: q, limit: 500 })
+      .then((r) => { if (r.ok) setMemories((r.memories as MemoryItem[]) ?? []); })
+      .catch(() => {});
+    sendToHelper({ type: "memory_stats" })
+      .then((r) => { if (r.ok) setStats(r as unknown as MemoryStats); })
+      .catch(() => {});
+  }, [kind, q]);
+
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => { const t = setInterval(load, 6_000); return () => clearInterval(t); }, [load]);
+
+  const buildNow = useCallback(async () => {
+    setBuilding(true);
+    try { await sendToHelper({ type: "build_memory_now" }); load(); }
+    finally { setBuilding(false); }
+  }, [load]);
+
+  const onAdd = useCallback(async () => {
+    const text = adding.trim();
+    if (text.length < 4) return;
+    await sendToHelper({ type: "add_memory", text, kind: kind === "all" ? "fact" : kind });
+    setAdding("");
+    load();
+  }, [adding, kind, load]);
+
+  const total = stats?.total ?? 0;
+  const pending = stats?.pending_embeddings ?? 0;
+
+  return (
+    <div style={{ flex: 1, overflow: "auto", padding: "32px 40px 80px", maxWidth: 860, margin: "0 auto", width: "100%" }} className="scroll">
+      <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 18 }}>
+        <a href="#/" style={{ fontSize: 12, color: "var(--muted)", textDecoration: "none" }}>← Back</a>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
+        <div>
+          <h1 className="serif" style={{ fontSize: 26, fontWeight: 600, margin: "0 0 4px", display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ color: "var(--accent)" }}>✦</span> Your memory
+          </h1>
+          <p style={{ color: "var(--muted)", fontSize: 13, margin: 0, fontStyle: "italic", maxWidth: 540 }}>
+            The durable facts Smriti distilled from your own chats. These travel with you into Claude,
+            ChatGPT, and Gemini — so you never have to re-explain yourself.
+          </p>
+        </div>
+        <button
+          onClick={buildNow}
+          disabled={building}
+          style={{
+            background: "var(--accent)", color: "#f6f0e3", border: "none",
+            borderRadius: 5, padding: "9px 16px", fontSize: 13, fontWeight: 600,
+            fontFamily: "var(--sans)", cursor: building ? "default" : "pointer",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {building ? "Building…" : total === 0 ? "Build my memory" : "Refresh from history"}
+        </button>
+      </div>
+
+      {/* Stat strip */}
+      <div style={{ display: "flex", gap: 10, margin: "22px 0 20px", flexWrap: "wrap" }}>
+        <div style={{
+          display: "flex", alignItems: "baseline", gap: 8,
+          background: "var(--surface)", border: "1px solid var(--hairline)",
+          borderRadius: 6, padding: "10px 16px",
+        }}>
+          <span className="serif" style={{ fontSize: 24, fontWeight: 600, color: "var(--ink)" }}>{total}</span>
+          <span style={{ fontSize: 12, color: "var(--muted)" }}>{total === 1 ? "memory" : "memories"}</span>
+        </div>
+        {MEMORY_KINDS.filter((k) => k.id !== "all").map((k) => (
+          <div key={k.id} style={{
+            display: "flex", alignItems: "center", gap: 7,
+            background: "var(--surface)", border: "1px solid var(--hairline)",
+            borderRadius: 6, padding: "10px 14px", fontSize: 12, color: "var(--ink-2)",
+          }}>
+            <span style={{ width: 7, height: 7, borderRadius: "50%", background: kindColor(k.id) }} />
+            {k.label}
+            <span className="mono" style={{ color: "var(--muted)" }}>{stats?.byKind?.[k.id as MemoryKind] ?? 0}</span>
+          </div>
+        ))}
+        {pending > 0 && (
+          <div style={{ display: "flex", alignItems: "center", fontSize: 11.5, color: "var(--muted)", fontStyle: "italic", padding: "10px 4px" }}>
+            indexing {pending}…
+          </div>
+        )}
+      </div>
+
+      {/* Add memory */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+        <input
+          value={adding}
+          onChange={(e) => setAdding(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") void onAdd(); }}
+          placeholder="Teach Smriti something to remember about you…"
+          style={{
+            flex: 1, border: "1px solid var(--hairline-strong)", borderRadius: 5,
+            padding: "9px 12px", fontSize: 13, fontFamily: "var(--sans)",
+            background: "var(--surface)", color: "var(--ink)", outline: "none",
+          }}
+        />
+        <button onClick={() => void onAdd()} disabled={adding.trim().length < 4} style={{
+          background: "var(--surface)", border: "1px solid var(--hairline-strong)",
+          borderRadius: 5, padding: "9px 16px", fontSize: 13, fontWeight: 500,
+          fontFamily: "var(--sans)", color: "var(--ink)",
+          cursor: adding.trim().length < 4 ? "default" : "pointer",
+        }}>Remember</button>
+      </div>
+
+      {/* Filters + search */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+        {MEMORY_KINDS.map((k) => {
+          const active = kind === k.id;
+          return (
+            <button key={k.id} onClick={() => setKind(k.id)} style={{
+              background: active ? "var(--accent)" : "transparent",
+              color: active ? "#f6f0e3" : "var(--ink-2)",
+              border: `1px solid ${active ? "var(--accent)" : "var(--hairline-strong)"}`,
+              borderRadius: 14, padding: "4px 12px", fontSize: 12,
+              fontFamily: "var(--sans)", cursor: "pointer",
+            }}>{k.label}</button>
+          );
+        })}
+        <div style={{ flex: 1 }} />
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Filter…"
+          style={{
+            width: 180, border: "1px solid var(--hairline-strong)", borderRadius: 14,
+            padding: "5px 12px", fontSize: 12, fontFamily: "var(--sans)",
+            background: "var(--surface)", color: "var(--ink)", outline: "none",
+          }}
+        />
+      </div>
+
+      {/* Memory list */}
+      {memories.length === 0 ? (
+        <div style={{
+          textAlign: "center", padding: "60px 20px", color: "var(--muted)",
+          border: "1px dashed var(--hairline-strong)", borderRadius: 8,
+        }}>
+          <div className="serif" style={{ fontSize: 17, color: "var(--ink-2)", marginBottom: 6 }}>
+            {total === 0 ? "No memories yet" : "Nothing matches that filter"}
+          </div>
+          <div style={{ fontSize: 13, fontStyle: "italic", maxWidth: 420, margin: "0 auto" }}>
+            {total === 0
+              ? "Click “Build my memory” to distill durable facts from the conversations you've already had — or just keep chatting and Smriti learns as you go."
+              : "Try a different category or clear the filter."}
+          </div>
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {memories.map((m) => (
+            <MemoryCard key={m.id} m={m} nav={nav} onChanged={load} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MemoryCard({ m, nav, onChanged }: { m: MemoryItem; nav: (r: Route) => void; onChanged: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(m.text);
+
+  const save = async () => {
+    const text = draft.trim();
+    if (text.length >= 4 && text !== m.text) {
+      await sendToHelper({ type: "edit_memory", id: m.id, text });
+      onChanged();
+    }
+    setEditing(false);
+  };
+
+  return (
+    <div style={{
+      background: "var(--surface)", border: "1px solid var(--hairline)",
+      borderLeft: `3px solid ${kindColor(m.kind)}`, borderRadius: 6,
+      padding: "12px 14px", display: "flex", flexDirection: "column", gap: 8,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{
+          fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.09em",
+          color: kindColor(m.kind), padding: "1px 6px", borderRadius: 3,
+          background: "color-mix(in srgb, " + kindColor(m.kind) + " 12%, transparent)",
+        }}>{m.kind}</span>
+        {m.source === "manual" && (
+          <span className="mono" style={{ fontSize: 9.5, color: "var(--muted-2)" }}>added by you</span>
+        )}
+        <div style={{ flex: 1 }} />
+        <button onClick={() => sendToHelper({ type: "pin_memory", id: m.id, pinned: !m.pinned }).then(onChanged)}
+          title={m.pinned ? "Unpin" : "Pin — always recalled"}
+          style={{ background: "transparent", border: "none", cursor: "pointer", fontSize: 13, opacity: m.pinned ? 1 : 0.35 }}>📌</button>
+        <button onClick={() => { setEditing(true); setDraft(m.text); }}
+          title="Edit" style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 12 }}>✎</button>
+        <button onClick={() => sendToHelper({ type: "delete_memory", id: m.id }).then(onChanged)}
+          title="Delete" style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 14 }}>×</button>
+      </div>
+
+      {editing ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <textarea
+            value={draft}
+            autoFocus
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void save(); if (e.key === "Escape") setEditing(false); }}
+            rows={2}
+            style={{
+              width: "100%", border: "1px solid var(--hairline-strong)", borderRadius: 4,
+              padding: "8px 10px", fontSize: 13.5, fontFamily: "var(--serif)",
+              background: "var(--bg)", color: "var(--ink)", resize: "vertical", outline: "none",
+            }}
+          />
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => void save()} style={{ background: "var(--accent)", color: "#f6f0e3", border: "none", borderRadius: 4, padding: "5px 12px", fontSize: 12, cursor: "pointer" }}>Save</button>
+            <button onClick={() => setEditing(false)} style={{ background: "transparent", color: "var(--muted)", border: "1px solid var(--hairline-strong)", borderRadius: 4, padding: "5px 12px", fontSize: 12, cursor: "pointer" }}>Cancel</button>
+          </div>
+        </div>
+      ) : (
+        <div className="serif" style={{ fontSize: 14.5, lineHeight: 1.45, color: "var(--ink)" }}>{m.text}</div>
+      )}
+
+      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 10.5, color: "var(--muted)" }}>
+        {m.source_platform && <ProviderChip id={m.source_platform} dim />}
+        <span>·</span>
+        <span className="mono">{relativeTime(m.created_at)}</span>
+        {m.use_count > 0 && (<><span>·</span><span className="mono">injected {m.use_count}×</span></>)}
+        {m.source_conversation_id && (
+          <>
+            <div style={{ flex: 1 }} />
+            <button
+              onClick={() => nav({ view: "conversation", conversationId: m.source_conversation_id!, msgId: m.source_message_id ?? undefined })}
+              style={{ background: "transparent", border: "none", color: "var(--accent)", fontSize: 11, cursor: "pointer", fontFamily: "var(--sans)" }}
+            >view source →</button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── App ─────────────────────────────────────────────────────────────────────
 
 function App() {
@@ -2182,6 +2492,7 @@ function App() {
   const [recents, setRecents] = useState<RecentConversation[]>([]);
   const [totals, setTotals] = useState({ conversations: 0, messages: 0 });
   const [embed, setEmbed] = useState<{ total: number; embedded: number; pending: number } | null>(null);
+  const [memoryCount, setMemoryCount] = useState(0);
 
   // Global search state
   const [query, setQuery] = useState<string>(route.q ?? "");
@@ -2225,6 +2536,9 @@ function App() {
             setEmbed({ total: r.total, embedded: r.embedded, pending: r.pending });
           }
         })
+        .catch(() => {});
+      sendToHelper({ type: "memory_stats" })
+        .then((r) => { if (r.ok) setMemoryCount(Number((r as { total?: number }).total ?? 0)); })
         .catch(() => {});
     };
     load();
@@ -2292,8 +2606,32 @@ function App() {
           totals={totals} theme={theme} onCycleTheme={cycleTheme}
           helperOk={helperState === "ok"}
           onOpenSettings={() => nav({ view: "settings" })}
+          onOpenMemory={() => nav({ view: "memory" })}
+          memoryCount={memoryCount}
         />
         <SettingsView totals={totals} embed={embed} nav={nav} />
+      </div>
+    );
+  }
+
+  // Memory is a full-page view too.
+  if (route.view === "memory") {
+    return (
+      <div style={{
+        width: "100%", height: "100%",
+        display: "flex", flexDirection: "column",
+        background: "var(--bg)", color: "var(--ink)", overflow: "hidden",
+      }}>
+        <TopBar
+          query={query} setQuery={setQuery}
+          searching={searching} resultCount={results.length}
+          totals={totals} theme={theme} onCycleTheme={cycleTheme}
+          helperOk={helperState === "ok"}
+          onOpenSettings={() => nav({ view: "settings" })}
+          onOpenMemory={() => nav({ view: "memory" })}
+          memoryCount={memoryCount}
+        />
+        <MemoryView nav={nav} />
       </div>
     );
   }
@@ -2318,6 +2656,8 @@ function App() {
         onCycleTheme={cycleTheme}
         helperOk={helperState === "ok"}
         onOpenSettings={() => nav({ view: "settings" })}
+        onOpenMemory={() => nav({ view: "memory" })}
+        memoryCount={memoryCount}
       />
       <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
         <LeftRail

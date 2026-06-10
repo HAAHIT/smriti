@@ -8,7 +8,7 @@
 // can resume mid-job. In-memory ActiveJob holds the run-loop's transient state
 // (latest titles buffer, fetched count this run).
 
-import type { BackfillProgress, BackfillState, Platform, BackfillJobStatus } from "@recall/shared";
+import type { BackfillProgress, BackfillState, Platform, BackfillJobStatus } from "@smriti/shared";
 import { getDb } from "../db.js";
 import { log } from "../logger.js";
 import { sendOutbound } from "../nm.js";

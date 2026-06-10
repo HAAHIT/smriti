@@ -10,8 +10,8 @@
 // The delta extractor below tries several common keys defensively.
 
 import { defineContentScript } from "wxt/sandbox";
-import { RECALL_TAG, type InjectToContentMessage } from "../capture/messages";
-import type { CaptureEvent } from "@recall/shared";
+import { SMRITI_TAG, type InjectToContentMessage } from "../capture/messages";
+import type { CaptureEvent } from "@smriti/shared";
 
 export default defineContentScript({
   matches: ["https://claude.ai/*"],
@@ -33,7 +33,7 @@ export default defineContentScript({
 
     const origFetch = window.fetch.bind(window);
 
-    window.fetch = async function recallFetch(
+    window.fetch = async function smritiFetch(
       input: RequestInfo | URL,
       init?: RequestInit,
     ): Promise<Response> {
@@ -249,7 +249,7 @@ export default defineContentScript({
     function emit(events: CaptureEvent[]): void {
       if (events.length === 0) return;
       const msg: InjectToContentMessage = {
-        recall: RECALL_TAG,
+        smriti: SMRITI_TAG,
         source: "claude-inject",
         events,
       };
@@ -259,7 +259,7 @@ export default defineContentScript({
     function emitError(label: string, err: unknown): void {
       try {
         // eslint-disable-next-line no-console
-        console.warn(`[recall:inject] ${label}`, err);
+        console.warn(`[smriti:inject] ${label}`, err);
       } catch {
         /* noop */
       }
