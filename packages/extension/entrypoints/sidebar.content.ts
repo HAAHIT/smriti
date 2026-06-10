@@ -565,6 +565,23 @@ function mountSidebar(): void {
   // ─── Memory recall (the hero) ───
   // The thing that makes "your AI remembers you" real: relevant memories with
   // one-click injection straight into the composer.
+  async function copyToClipboard(text: string): Promise<boolean> {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch { /* clipboard API can be blocked — fall through */ }
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.cssText = "position:fixed;opacity:0;pointer-events:none";
+      ui.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return ok;
+    } catch { return false; }
+  }
+
   async function injectMemories(hits: MemoryRecallHit[]): Promise<void> {
     if (hits.length === 0) return;
     const block = formatMemoryBlock(hits.map((h) => ({ text: h.text })));
@@ -575,7 +592,13 @@ function mountSidebar(): void {
       void sendToHelper({ type: "touch_memories", ids: hits.map((h) => h.id) }).catch(() => {});
       flashToast(hits.length === 1 ? "Added to your prompt ✓" : `Added ${hits.length} memories ✓`);
     } else {
-      flashToast("Click your message box once, then retry.");
+      const copied = await copyToClipboard(block);
+      if (copied) {
+        void sendToHelper({ type: "touch_memories", ids: hits.map((h) => h.id) }).catch(() => {});
+        flashToast("Copied — paste into your message box (Ctrl+V)");
+      } else {
+        flashToast("Click your message box once, then retry.");
+      }
     }
   }
 
