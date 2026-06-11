@@ -169,6 +169,13 @@ function mountSidebar(): void {
   // Set true while we inject, so the composer's resulting input event doesn't
   // re-trigger recall on the text we just wrote.
   let suppressComposerInput = false;
+  // Mirrors the per-host capture pause (Settings → Capture). When true, the
+  // composer watch below stops observing entirely — pausing capture should
+  // pause all observation on this site, not just message ingestion.
+  let capturePaused = false;
+  // Hoisted above pollCapturePaused (which references it from an IIFE invoked
+  // before the "Live composer watch" section runs).
+  let composerEl: HTMLElement | null = null;
 
   function setState(next: Partial<PanelState>): void {
     Object.assign(state, next);
@@ -260,6 +267,102 @@ function mountSidebar(): void {
   // on internal links, so we poll URL every 800ms. Cheap.
   setInterval(() => { void refreshCurrentChat(); }, 800);
 
+  // ─── Live composer watch (the core loop) ───
+  // Recall memories from what the user is typing into the host AI's message box
+  // — BEFORE they send — so they can inject context into the very prompt being
+  // written. This is what turns Smriti from an archive into a memory layer.
+  let composerTimer: number | null = null;
+  function readComposerText(el: HTMLElement): string {
+    return el.tagName === "TEXTAREA" || el.tagName === "INPUT"
+      ? (el as HTMLTextAreaElement).value
+      : el.innerText || el.textContent || "";
+  }
+  function onComposerInput(): void {
+    if (suppressComposerInput) return;        // our own injection fired this
+    if (capturePaused) return;                // pausing capture pauses observation
+    if (!composerEl || state.query.trim()) return; // sidebar search takes priority
+    const text = readComposerText(composerEl).trim();
+    if (composerTimer !== null) clearTimeout(composerTimer);
+    if (text.length < PROACTIVE_MIN_CHARS) {
+      if (state.proactiveQuery) setState({ proactiveQuery: null, memories: [], hero: null, others: [] });
+      return;
+    }
+    composerTimer = window.setTimeout(() => {
+      if (capturePaused || state.query.trim()) return;
+      const q = text.slice(0, 200);
+      setState({ proactiveQuery: q });
+      void runSearch(q);
+    }, PROACTIVE_DEBOUNCE_MS);
+  }
+  function attachComposer(): void {
+    if (capturePaused) return;                // don't attach if capture is paused
+    const el = findComposer();
+    if (el && el !== composerEl) {
+      composerEl?.removeEventListener("input", onComposerInput);
+      composerEl = el;
+      composerEl.addEventListener("input", onComposerInput);
+    }
+  }
+  function detachComposer(): void {
+    // Detach immediately — an attached-but-no-op listener still observes
+    // every keystroke, which "pause" should prevent.
+    composerEl?.removeEventListener("input", onComposerInput);
+    composerEl = null;
+  }
+
+  // Applies a capture-pause transition: tears down (or re-attaches) the
+  // composer watch, and — when pausing — invalidates any in-flight
+  // runSearch() and clears recall state, so a response that was already
+  // dispatched can't repopulate the panel after the user paused.
+  function applyCapturePaused(next: boolean): void {
+    if (next === capturePaused) return;
+    capturePaused = next;
+    if (capturePaused) {
+      searchSeq += 1;
+      setState({ proactiveQuery: null, loading: false, hero: null, others: [], memories: [] });
+      if (composerTimer !== null) { clearTimeout(composerTimer); composerTimer = null; }
+      if (proactiveTimer !== null) { clearTimeout(proactiveTimer); proactiveTimer = null; }
+      detachComposer();
+    } else {
+      attachComposer();
+    }
+  }
+
+  // Fetches the paused-hosts list from background and applies it. Hostnames
+  // are stored as claude.ai / chatgpt.com / gemini.google.com (see
+  // platformToHost in background.ts).
+  async function syncCapturePaused(): Promise<void> {
+    try {
+      const resp = await browser.runtime.sendMessage({ kind: "get_capture_paused" }) as
+        | { ok: boolean; paused?: string[] }
+        | undefined;
+      const paused = resp?.ok && Array.isArray(resp.paused) ? resp.paused : [];
+      applyCapturePaused(paused.includes(location.hostname.replace(/^www\./, "")));
+    } catch { /* background not reachable; quiet */ }
+  }
+
+  // Hydrate pause state BEFORE attaching the composer watch, so a paused
+  // host is never observed even briefly on boot. Re-sync every 60s as a
+  // fallback — Settings toggles also broadcast capture_toggle (below) for
+  // an instant update on open tabs.
+  void (async function bootCapture() {
+    await syncCapturePaused();
+    attachComposer();
+    // Re-attach across SPA navigation / editor remounts. Cheap.
+    setInterval(attachComposer, 1500);
+    setInterval(syncCapturePaused, 60_000);
+  })();
+
+  // Settings → Capture toggles broadcast this so open tabs react instantly
+  // instead of waiting for the next 60s sync.
+  browser.runtime.onMessage.addListener((msg: unknown) => {
+    if (typeof msg !== "object" || msg === null) return;
+    const m = msg as { kind?: string; host?: string; off?: boolean };
+    if (m.kind !== "capture_toggle") return;
+    if (m.host !== location.hostname.replace(/^www\./, "")) return;
+    applyCapturePaused(!!m.off);
+  });
+
   // Footer indexing status — polled.
   void (async function pollIndex() {
     try {
@@ -273,6 +376,7 @@ function mountSidebar(): void {
 
   // Proactive: live user message → search for related past conversations.
   window.addEventListener("message", (ev: MessageEvent) => {
+    if (capturePaused) return;                 // pausing capture pauses observation
     if (ev.source !== window) return;
     if (!isInjectMessage(ev.data)) return;
     const events = ev.data.events as CaptureEvent[];
@@ -289,51 +393,12 @@ function mountSidebar(): void {
     if (proactiveTimer !== null) clearTimeout(proactiveTimer);
     proactiveTimer = window.setTimeout(() => {
       // Don't override what the user has typed in the sidebar input.
-      if (state.query.trim()) return;
+      if (capturePaused || state.query.trim()) return;
       const q = text.slice(0, 140);
       setState({ proactiveQuery: q });
       void runSearch(q);
     }, PROACTIVE_DEBOUNCE_MS);
   });
-
-  // ─── Live composer watch (the core loop) ───
-  // Recall memories from what the user is typing into the host AI's message box
-  // — BEFORE they send — so they can inject context into the very prompt being
-  // written. This is what turns Smriti from an archive into a memory layer.
-  let composerEl: HTMLElement | null = null;
-  let composerTimer: number | null = null;
-  function readComposerText(el: HTMLElement): string {
-    return el.tagName === "TEXTAREA" || el.tagName === "INPUT"
-      ? (el as HTMLTextAreaElement).value
-      : el.innerText || el.textContent || "";
-  }
-  function onComposerInput(): void {
-    if (suppressComposerInput) return;        // our own injection fired this
-    if (!composerEl || state.query.trim()) return; // sidebar search takes priority
-    const text = readComposerText(composerEl).trim();
-    if (composerTimer !== null) clearTimeout(composerTimer);
-    if (text.length < PROACTIVE_MIN_CHARS) {
-      if (state.proactiveQuery) setState({ proactiveQuery: null, memories: [], hero: null, others: [] });
-      return;
-    }
-    composerTimer = window.setTimeout(() => {
-      if (state.query.trim()) return;
-      const q = text.slice(0, 200);
-      setState({ proactiveQuery: q });
-      void runSearch(q);
-    }, PROACTIVE_DEBOUNCE_MS);
-  }
-  function attachComposer(): void {
-    const el = findComposer();
-    if (el && el !== composerEl) {
-      composerEl?.removeEventListener("input", onComposerInput);
-      composerEl = el;
-      composerEl.addEventListener("input", onComposerInput);
-    }
-  }
-  attachComposer();
-  // Re-attach across SPA navigation / editor remounts. Cheap.
-  setInterval(attachComposer, 1500);
 
   render = () => {
     ui.innerHTML = "";
@@ -436,6 +501,8 @@ function mountSidebar(): void {
       <span class="rc-mono">${state.msgsIndexed === null ? "—" : state.msgsIndexed} msgs indexed</span>
       <div class="rc-spacer"></div>
       <span class="rc-mono rc-muted-text">MiniLM-L6</span>
+      <span class="rc-divider">·</span>
+      <a class="rc-link" href="${reportIssueUrl(currentPlatform())}" target="_blank" rel="noopener">Report an issue ↗</a>
     `;
     panel.appendChild(footer);
 
@@ -565,6 +632,23 @@ function mountSidebar(): void {
   // ─── Memory recall (the hero) ───
   // The thing that makes "your AI remembers you" real: relevant memories with
   // one-click injection straight into the composer.
+  async function copyToClipboard(text: string): Promise<boolean> {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch { /* clipboard API can be blocked — fall through */ }
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.cssText = "position:fixed;opacity:0;pointer-events:none";
+      ui.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return ok;
+    } catch { return false; }
+  }
+
   async function injectMemories(hits: MemoryRecallHit[]): Promise<void> {
     if (hits.length === 0) return;
     const block = formatMemoryBlock(hits.map((h) => ({ text: h.text })));
@@ -575,7 +659,13 @@ function mountSidebar(): void {
       void sendToHelper({ type: "touch_memories", ids: hits.map((h) => h.id) }).catch(() => {});
       flashToast(hits.length === 1 ? "Added to your prompt ✓" : `Added ${hits.length} memories ✓`);
     } else {
-      flashToast("Click your message box once, then retry.");
+      const copied = await copyToClipboard(block);
+      if (copied) {
+        void sendToHelper({ type: "touch_memories", ids: hits.map((h) => h.id) }).catch(() => {});
+        flashToast("Copied — paste into your message box (Ctrl+V)");
+      } else {
+        flashToast("Click your message box once, then retry.");
+      }
     }
   }
 
@@ -852,6 +942,25 @@ function detectCurrentChat(url: string): { platform: Platform; platformConvId: s
     }
   } catch { /* malformed url */ }
   return null;
+}
+
+// Which of the three supported hosts we're running on. The content script
+// only matches these three, so this always resolves.
+function currentPlatform(): Platform {
+  const h = location.hostname;
+  if (h.endsWith("chatgpt.com")) return "chatgpt";
+  if (h.endsWith("gemini.google.com")) return "gemini";
+  return "claude";
+}
+
+// Pre-filled "report a broken site" GitHub issue link — selectors on these
+// sites change often and we have no telemetry, so the user is the sensor.
+function reportIssueUrl(platform: Platform): string {
+  const v = chrome.runtime.getManifest().version;
+  return (
+    `https://github.com/HAAHIT/smriti/issues/new?title=${encodeURIComponent(`[${platform}] `)}` +
+    `&body=${encodeURIComponent(`Platform: ${platform}\nExtension: v${v}\nWhat broke:\n`)}`
+  );
 }
 
 function providerBadge(p: string): { label: string; color: string } {
@@ -1415,6 +1524,8 @@ function injectStyles(shadow: ShadowRoot): void {
     }
     .rc-dot { width: 6px; height: 6px; border-radius: 50%; }
     .rc-dot-green { background: #1f7a64; }
+    .rc-link { color: var(--muted); text-decoration: none; white-space: nowrap; }
+    .rc-link:hover { color: var(--accent); }
   `;
   shadow.appendChild(style);
 }

@@ -385,7 +385,8 @@
         Smriti is local-first in the strict sense. No account. No server. No telemetry.
         Your conversations — and the memory distilled from them — live in your browser's
         private storage, invisible to websites and unreadable by us. There is no "us"
-        server to read them. The only network call is a one-time model download.
+        server to read them — even the AI model that powers search ships bundled inside
+        the extension, so there's nothing to download.
       </p>
       <div class="privacy-chips">
         <span class="chip"><span class="c">✓</span> Runs 100% in your browser</span>
@@ -405,7 +406,7 @@
     <div class="faq">
       <details open>
         <summary>Does my data leave my computer?</summary>
-        <p>No. Capture, distillation, embeddings, and search all run inside your browser. The only network request is a one-time ~25 MB download of the local embedding model. Your messages and memories are never transmitted anywhere.</p>
+        <p>No. Capture, distillation, embeddings, and search all run inside your browser — the local embedding model ships bundled with the extension, so there's nothing to download. The only network requests happen when you click "Import history," which uses your existing browser session to fetch your own conversations from claude.ai or chatgpt.com. Your messages and memories are never transmitted anywhere.</p>
       </details>
       <details>
         <summary>How does it know what to remember?</summary>

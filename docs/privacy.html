@@ -15,7 +15,7 @@
 </head>
 <body>
 <h1>Smriti Privacy Policy</h1>
-<p class="updated">Last updated: 2026-05-24</p>
+<p class="updated">Last updated: 2026-06-11</p>
 <p>Smriti is built local-first. Short version: <strong>your conversations never leave your browser</strong>.</p>
 
 <h2>What Smriti collects</h2>
@@ -34,11 +34,10 @@
 </ul>
 
 <h2>Network requests</h2>
-<ol>
-  <li><strong>One-time model download</strong> — the all-MiniLM-L6-v2 ONNX model (~25 MB) from Hugging Face's CDN on first use. Cached permanently. Contains no user data.</li>
+<ul>
   <li><strong>Backfill fetch</strong> — when you click "Import history", Smriti uses your existing browser session to fetch past conversations from claude.ai or chatgpt.com directly. Smriti never sees your password or auth tokens.</li>
-</ol>
-<p>No conversation content, message text, or embeddings are ever transmitted to any server.</p>
+</ul>
+<p>The embedding model used for semantic search (~25 MB) ships bundled inside the extension — it is never downloaded. No conversation content, message text, or embeddings are ever transmitted to any server.</p>
 
 <h2>Permissions</h2>
 <ul>

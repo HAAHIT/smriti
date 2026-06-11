@@ -24,6 +24,15 @@ let _dirty = false;
 let _flushTimer: ReturnType<typeof setTimeout> | null = null;
 
 export async function initDb(): Promise<void> {
+  // Ask the browser never to evict this origin's storage (OPFS) under disk
+  // pressure. Best-effort: extension origins are usually granted silently.
+  try {
+    const persisted = await navigator.storage.persist();
+    console.log("[smriti:db] storage.persist:", persisted ? "granted" : "denied");
+  } catch (e) {
+    console.warn("[smriti:db] storage.persist unavailable", e);
+  }
+
   _SQL = await initSqlJs({ locateFile: () => sqlWasmUrl as string });
 
   // Try to load an existing database from OPFS.

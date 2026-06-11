@@ -58,6 +58,7 @@ function scheduleNext(ms: number): void {
 
 async function tick(): Promise<void> {
   if (!running) return;
+  const t0 = Date.now();
 
   if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
     console.warn("[smriti:index] too many consecutive errors, backing off", consecutiveErrors);
@@ -79,12 +80,12 @@ async function tick(): Promise<void> {
 
   if (pending.length === 0 && pendingMem.length === 0) {
     consecutiveErrors = 0;
+    console.debug(`[smriti:index] tick ms=${Date.now() - t0} extracted=${extracted} idle`);
     // If extraction just created memories, come back promptly to embed them.
     scheduleNext(extracted > 0 ? TICK_INTERVAL_MS : IDLE_INTERVAL_MS);
     return;
   }
 
-  const t0 = Date.now();
   try {
     let batchStored = 0;
     if (pending.length > 0) {
@@ -131,7 +132,7 @@ async function tick(): Promise<void> {
       : msg.includes("onnx") || msg.includes("ONNX")
       ? " (ONNX runtime error)"
       : "";
-    console.error(`[smriti:index] batch failed${hint}`, msg);
+    console.error(`[smriti:index] batch failed ms=${Date.now() - t0}${hint}`, msg);
     const backoff = Math.min(IDLE_INTERVAL_MS * consecutiveErrors, IDLE_INTERVAL_MS * 8);
     scheduleNext(backoff);
     return;

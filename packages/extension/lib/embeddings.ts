@@ -1,8 +1,8 @@
 // Local embedding generation using Transformers.js (WASM/ONNX).
 //
-// Runs inside the Offscreen Document. The model (~25 MB) is downloaded from
-// HuggingFace CDN on first use and cached in the browser's Cache Storage.
-// Subsequent starts: model loads from cache (<1 s).
+// Runs inside the Offscreen Document. The model (~25 MB) and ONNX runtime
+// wasm are vendored into the package by `npm run fetch:model` (run
+// automatically via prebuild/predev) — zero network requests at runtime.
 //
 // IMPORTANT: set numThreads=1 — offscreen documents cannot use SharedArrayBuffer
 // (requires COOP/COEP headers that extensions can't set), so multi-threaded
@@ -14,11 +14,17 @@ import { dbAll, dbGet, dbRun, markDirty } from "./db.js";
 export const EMBED_MODEL = "Xenova/all-MiniLM-L6-v2";
 export const EMBED_DIMS = 384;
 
-// Disable local model lookup — always fetch from CDN / cache.
-env.allowLocalModels = false;
+// Fully local model — vendored into the package by `npm run fetch:model`.
+// Zero network calls at runtime.
+env.allowRemoteModels = false;
+env.allowLocalModels = true;
+env.localModelPath = chrome.runtime.getURL("/models/");
+env.useBrowserCache = false; // files are extension-local; caching adds nothing
 // Single-threaded inference (no SharedArrayBuffer in offscreen context).
 // @ts-ignore — property exists at runtime
 if (env.backends?.onnx?.wasm) {
+  // @ts-ignore
+  env.backends.onnx.wasm.wasmPaths = chrome.runtime.getURL("/ort/");
   // @ts-ignore
   env.backends.onnx.wasm.numThreads = 1;
 }

@@ -33,6 +33,21 @@ function persistPausedHosts(): void {
   browser.storage.local.set({ [PAUSED_HOSTS_KEY]: [...pausedHosts] }).catch(() => {});
 }
 
+// Notify any open tabs on `host` immediately, so the sidebar's composer
+// watch doesn't wait on its 60s poll to react to a Settings toggle.
+async function broadcastCaptureToggle(host: string, off: boolean): Promise<void> {
+  const tabs = await browser.tabs.query({});
+  for (const tab of tabs) {
+    if (!tab.id || !tab.url) continue;
+    try {
+      if (new URL(tab.url).hostname.replace(/^www\./, "") !== host) continue;
+    } catch {
+      continue;
+    }
+    browser.tabs.sendMessage(tab.id, { kind: "capture_toggle", host, off }).catch(() => {});
+  }
+}
+
 // ─── Offscreen document lifecycle ────────────────────────────────────────────
 //
 // Chrome can close an offscreen document when the service worker is dormant.
@@ -106,6 +121,13 @@ export default defineBackground(() => {
   // Create offscreen doc on startup.
   void ensureOffscreen();
   startKeepalive();
+
+  // Fresh install → open the memory-first onboarding funnel.
+  chrome.runtime.onInstalled.addListener((d) => {
+    if (d.reason === "install") {
+      void chrome.tabs.create({ url: chrome.runtime.getURL("/options.html#/welcome") });
+    }
+  });
 
   // Toolbar icon → open options page.
   browser.action.onClicked.addListener(() => {
@@ -190,8 +212,16 @@ export default defineBackground(() => {
           if (off) pausedHosts.add(host);
           else pausedHosts.delete(host);
           persistPausedHosts();
+          void broadcastCaptureToggle(host, off);
         }
         sendResponse({ ok: true });
+        return true;
+      }
+
+      // ── Get capture-paused hosts (content scripts self-gate on this) ─────
+
+      if (kind === "get_capture_paused") {
+        sendResponse({ ok: true, paused: [...pausedHosts] });
         return true;
       }
 

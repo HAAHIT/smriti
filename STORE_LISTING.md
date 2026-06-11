@@ -19,8 +19,12 @@ updated whenever marketing text changes.
 ## Detailed description (max 16,000 chars)
 
 ```
-Smriti is a local-first archive and recall layer for everything you've ever
-discussed with Claude, ChatGPT, and Gemini.
+Your AI finally remembers you.
+
+Smriti captures your conversations across Claude, ChatGPT, and Gemini,
+distills durable facts about you — who you are, how you like to work, what
+you're building — and injects that context into any prompt in one click.
+Entirely on your device.
 
 ─────────────────────────────────────────
 THE PROBLEM
@@ -31,6 +35,8 @@ You use AI tools every day. Over months you've had hundreds of conversations
 
   • "I solved this exact thing three weeks ago, where was it?"
   • "I had a great conversation about X but can't find the specific exchange."
+  • "I just explained my whole stack and how I like to work — again — to a
+    brand-new chat that remembers none of it."
 
 Each AI tool has its own search, but it's keyword-only, scoped to one
 platform, and dumps you at the top of a fifty-message thread. Your thinking
@@ -41,6 +47,12 @@ Smriti fixes this.
 ─────────────────────────────────────────
 WHAT SMRITI DOES
 ─────────────────────────────────────────
+
+MEMORY, INJECTED IN ONE CLICK
+As you type a new message, Smriti recalls relevant facts about you — your
+stack, your preferences, your in-flight projects — distilled automatically
+from past conversations. A "Smriti remembers" card appears with one click to
+drop that context straight into the composer, on Claude, ChatGPT, or Gemini.
 
 AUTOMATIC CAPTURE
 Captures every message you send and receive on claude.ai, chatgpt.com, and
@@ -116,20 +128,22 @@ native helper, no account to create.
      System (OPFS).
 
   3. Embeddings are computed locally inside the same offscreen document
-     using transformers.js and the all-MiniLM-L6-v2 ONNX model (downloaded
-     once from Hugging Face's CDN, ~25 MB, cached permanently).
+     using transformers.js and the all-MiniLM-L6-v2 ONNX model, which ships
+     bundled inside the extension package (~25 MB, never downloaded).
 
   4. Search queries hit the local FTS5 index and embedding index, fused
      via RRF, all inside your browser.
 
-Everything runs inside Chrome. Nothing touches a remote server after the
-one-time model download.
+Everything runs inside Chrome. Smriti makes zero network requests of its
+own — the only traffic is your browser's own session talking to claude.ai
+or chatgpt.com when you explicitly import history.
 
 ─────────────────────────────────────────
 WHAT IT DOESN'T DO
 ─────────────────────────────────────────
 
-  • Doesn't send your data anywhere (after the one-time model download).
+  • Doesn't send your data anywhere. Doesn't download anything at runtime —
+    the embedding model ships bundled with the extension.
   • Doesn't require an account.
   • Doesn't auto-update or call home.
   • Doesn't index web pages or other browser activity — only the three AI
@@ -149,7 +163,8 @@ REQUIREMENTS
 ─────────────────────────────────────────
 
   • Chrome 116+ (or Brave, Edge — any modern Chromium)
-  • ~25 MB for the embedding model (downloaded once, cached in the browser)
+  • ~65 MB install size (includes the bundled embedding model — nothing
+    downloaded separately)
   • ~1 MB per 1,000 messages archived
 
 That's it. Install and open any AI chat — Smriti starts capturing.
@@ -173,9 +188,10 @@ Public
 
 ## Single purpose statement
 
-> Smriti's single purpose is to archive, search, and surface the user's own
-> AI conversations (from Claude.ai, ChatGPT, and Gemini) locally inside
-> their browser, so they can find and reference past discussions at any time.
+> Smriti's single purpose is to locally capture the user's own AI
+> conversations (from Claude.ai, ChatGPT, and Gemini), let the user search
+> them, and re-use distilled facts about themselves in new prompts. All
+> storage and processing happens on-device; the extension has no server.
 
 ---
 
@@ -192,9 +208,9 @@ data is stored in chrome.storage — that lives in the OPFS SQLite database.
 ### `offscreen`
 Smriti runs a persistent offscreen document that owns the sql.js SQLite
 database (stored in OPFS) and the transformers.js embedding pipeline. The
-offscreen document is the local compute engine of the extension — all
-ingestion, indexing, and search happen here, inside Chrome, with no external
-network calls (after the one-time model download).
+embedding model ships bundled with the extension, so the offscreen document
+is the local compute engine of the extension — all ingestion, indexing, and
+search happen here, inside Chrome, with no external network calls.
 
 ### `scripting`
 Used to programmatically inject the sidebar content script into AI chat tabs
@@ -217,6 +233,30 @@ onnxruntime-web (ONNX Runtime for local embedding inference). Both run
 entirely within the extension's offscreen document. No remote code is
 fetched or evaluated — this flag is a WASM-specific compile requirement, not
 a general eval permission.
+
+---
+
+## Review notes (single purpose & permissions)
+
+Quick-reference summary for CWS reviewer follow-ups and the Privacy
+practices tab's permission / remote-code / data-use fields.
+
+- **Single purpose:** Smriti locally captures the user's own AI
+  conversations on three sites, lets the user search them, and re-use
+  distilled facts in new prompts. All storage and processing is on-device;
+  the extension has no server.
+- **`storage`** — persists capture pause toggles and onboarding flags.
+- **`offscreen`** — hosts the SQLite (WASM) database and the local embedding
+  model; MV3 service workers cannot run long-lived WASM workloads.
+- **`scripting` + host permissions** (`claude.ai`, `chatgpt.com`,
+  `gemini.google.com`) — content scripts that (a) read the user's own
+  conversation streams on these three sites only, and (b) render the
+  sidebar; text is written into the prompt box only on the user's explicit
+  click.
+- **Remote code:** none — all JS/WASM is bundled, including the local
+  embedding model.
+- **Data use disclosures (CWS form):** collects no data; nothing is
+  transmitted or sold; all data stays on the user's device.
 
 ---
 
@@ -280,7 +320,6 @@ Host the contents of `PRIVACY_POLICY.md` at a public URL, e.g.:
 - [ ] Pay the one-time $5 CWS developer registration fee
 - [ ] Create GitHub repo and push source code
 - [ ] Deploy privacy policy to public URL
-- [ ] Fill in all `HAAHIT` / `agrawalhitesh4444@gmail.com` placeholders
 - [ ] Run `npx wxt zip` to produce the submission zip (no source maps)
 - [ ] Upload zip via CWS dashboard
 - [ ] Set item name, short description, detailed description (above)

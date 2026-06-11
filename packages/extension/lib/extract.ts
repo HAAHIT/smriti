@@ -27,6 +27,11 @@ interface Rule {
 const REQUEST_RE =
   /^\s*(please\s+)?(write|generate|create|make|build|explain|show|give|tell|help|fix|debug|implement|refactor|translate|summari[sz]e|list|draw|design|code|can you|could you|would you|how (do|can|should) i|what('?s| is)|why (do|does|is)|when (do|does|is)|where (do|does|is)|who (is|are))\b/i;
 
+// Time-anchored statements decay fast — they're tasks, not facts about the
+// user. Hard-skip the broad "fact" kind; soften salience for the rest.
+const EPHEMERAL_RE =
+  /\b(today|tonight|tomorrow|yesterday|this (morning|afternoon|evening|week|weekend|month|sprint|quarter)|next (week|month|sprint)|by (monday|tuesday|wednesday|thursday|friday|saturday|sunday|eod|eow|end of (the )?(day|week|month))|right now|at the moment|asap)\b/i;
+
 const RULES: Rule[] = [
   // identity — who the user is
   { kind: "identity", salience: 0.92, re: /\bi['’]?m\s+(a|an|the)\s+[a-z]/i },
@@ -80,8 +85,13 @@ export function extractCandidates(text: string): Candidate[] {
       if (norm.length < MIN_MEMORY_LEN || seen.has(norm)) break;
       // "fact" rule is broad — require a bit more length to avoid noise.
       if (rule.kind === "fact" && cleaned.length < 24) break;
+      const ephemeral = EPHEMERAL_RE.test(clause);
+      // Time-anchored "facts" (e.g. "I need this by Friday") are tasks, not
+      // durable memory — drop them. Other kinds keep the clause but with
+      // reduced salience, since it may still partly hold up over time.
+      if (ephemeral && rule.kind === "fact") break;
       seen.add(norm);
-      out.push({ kind: rule.kind, text: cleaned, salience: rule.salience });
+      out.push({ kind: rule.kind, text: cleaned, salience: ephemeral ? Math.max(0.3, rule.salience - 0.15) : rule.salience });
       break; // first rule wins for this clause
     }
   }

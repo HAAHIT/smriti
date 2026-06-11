@@ -247,6 +247,7 @@ const FTS_K = 30;
 const VEC_K = 30;
 
 export async function recallMemories(query: string, limit = 6): Promise<MemoryRecallHit[]> {
+  const t0 = Date.now();
   const q = query.trim();
   const finalLimit = Math.min(Math.max(1, limit), 25);
 
@@ -305,7 +306,10 @@ export async function recallMemories(query: string, limit = 6): Promise<MemoryRe
     else byId.set(r.id, { id: r.id, score: 0.008, match: "pinned" });
   });
 
-  if (byId.size === 0) return [];
+  if (byId.size === 0) {
+    console.debug(`[smriti:memory] recall qlen=${q.length} hits=0 ms=${Date.now() - t0}`);
+    return [];
+  }
 
   // Hydrate + apply boosts.
   const ids = [...byId.keys()];
@@ -344,7 +348,11 @@ export async function recallMemories(query: string, limit = 6): Promise<MemoryRe
       match: agg.match,
     });
   }
-  return hits.sort((a, b) => b.score - a.score).slice(0, finalLimit);
+  const result = hits.sort((a, b) => b.score - a.score).slice(0, finalLimit);
+  const ms = Date.now() - t0;
+  console.debug(`[smriti:memory] recall qlen=${q.length} hits=${result.length} ms=${ms}`);
+  if (ms > 200) console.warn(`[smriti:memory] slow recall (${ms}ms) qlen=${q.length}`);
+  return result;
 }
 
 function buildFtsQuery(q: string): string {
@@ -390,7 +398,7 @@ function rowToItem(r: Record<string, unknown>): MemoryItem {
   };
 }
 
-export function listMemories(opts: { kind?: MemoryKind | "all"; query?: string; limit?: number } = {}): MemoryItem[] {
+export function listMemories(opts: { kind?: MemoryKind | "all"; query?: string; limit?: number; sort?: "default" | "recent" } = {}): MemoryItem[] {
   const limit = Math.min(opts.limit ?? 500, 1000);
   const where: string[] = ["status = 'active'"];
   const params: (string | number)[] = [];
@@ -400,9 +408,12 @@ export function listMemories(opts: { kind?: MemoryKind | "all"; query?: string; 
     params.push("%" + normalize(opts.query) + "%");
   }
   params.push(limit);
+  const orderBy = opts.sort === "recent"
+    ? "created_at DESC"
+    : "pinned DESC, salience DESC, created_at DESC";
   const rows = dbAll(
     `SELECT * FROM memories WHERE ${where.join(" AND ")}
-     ORDER BY pinned DESC, salience DESC, created_at DESC LIMIT ?`,
+     ORDER BY ${orderBy} LIMIT ?`,
     params,
   );
   return rows.map(rowToItem);

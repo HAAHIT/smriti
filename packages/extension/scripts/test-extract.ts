@@ -26,7 +26,10 @@ const SAMPLES: string[] = [
 ];
 
 // Must-have: at least one memory whose text contains the substring.
-const MUST_HAVE = ["Rust", "Virohan", "SP-GiST", "TypeScript", "Priya", "Tailwind", "Friday"];
+const MUST_HAVE = ["Rust", "Virohan", "SP-GiST", "TypeScript", "Priya", "Tailwind", "blue color scheme"];
+// Must-not-capture: these substrings should never appear in any extracted
+// memory — ephemeral/time-anchored noise (see EPHEMERAL_RE in extract.ts).
+const MUST_NOT_CAPTURE = ["Friday"];
 // Must-skip: these messages should yield ZERO memories.
 const MUST_SKIP = [
   "Can you write me a function that parses ISO timestamps?",
@@ -61,6 +64,12 @@ let fail = 0;
 for (const needle of MUST_HAVE) {
   const ok = allTexts.some((t) => t.includes(needle));
   console.log(`${ok ? "✓" : "✗"} must capture "${needle}"`);
+  ok ? pass++ : fail++;
+}
+for (const needle of MUST_NOT_CAPTURE) {
+  const n = needle.toLowerCase();
+  const ok = !allTexts.some((t) => t.toLowerCase().includes(n));
+  console.log(`${ok ? "✓" : "✗"} must NOT capture "${needle}"`);
   ok ? pass++ : fail++;
 }
 for (const msg of MUST_SKIP) {
