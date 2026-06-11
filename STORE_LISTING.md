@@ -128,20 +128,22 @@ native helper, no account to create.
      System (OPFS).
 
   3. Embeddings are computed locally inside the same offscreen document
-     using transformers.js and the all-MiniLM-L6-v2 ONNX model (downloaded
-     once from Hugging Face's CDN, ~25 MB, cached permanently).
+     using transformers.js and the all-MiniLM-L6-v2 ONNX model, which ships
+     bundled inside the extension package (~25 MB, never downloaded).
 
   4. Search queries hit the local FTS5 index and embedding index, fused
      via RRF, all inside your browser.
 
-Everything runs inside Chrome. Nothing touches a remote server after the
-one-time model download.
+Everything runs inside Chrome. Smriti makes zero network requests of its
+own — the only traffic is your browser's own session talking to claude.ai
+or chatgpt.com when you explicitly import history.
 
 ─────────────────────────────────────────
 WHAT IT DOESN'T DO
 ─────────────────────────────────────────
 
-  • Doesn't send your data anywhere (after the one-time model download).
+  • Doesn't send your data anywhere. Doesn't download anything at runtime —
+    the embedding model ships bundled with the extension.
   • Doesn't require an account.
   • Doesn't auto-update or call home.
   • Doesn't index web pages or other browser activity — only the three AI
@@ -161,7 +163,8 @@ REQUIREMENTS
 ─────────────────────────────────────────
 
   • Chrome 116+ (or Brave, Edge — any modern Chromium)
-  • ~25 MB for the embedding model (downloaded once, cached in the browser)
+  • ~65 MB install size (includes the bundled embedding model — nothing
+    downloaded separately)
   • ~1 MB per 1,000 messages archived
 
 That's it. Install and open any AI chat — Smriti starts capturing.
@@ -205,9 +208,9 @@ data is stored in chrome.storage — that lives in the OPFS SQLite database.
 ### `offscreen`
 Smriti runs a persistent offscreen document that owns the sql.js SQLite
 database (stored in OPFS) and the transformers.js embedding pipeline. The
-offscreen document is the local compute engine of the extension — all
-ingestion, indexing, and search happen here, inside Chrome, with no external
-network calls (after the one-time model download).
+embedding model ships bundled with the extension, so the offscreen document
+is the local compute engine of the extension — all ingestion, indexing, and
+search happen here, inside Chrome, with no external network calls.
 
 ### `scripting`
 Used to programmatically inject the sidebar content script into AI chat tabs

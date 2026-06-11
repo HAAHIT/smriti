@@ -1,6 +1,6 @@
 # Smriti Privacy Policy
 
-_Last updated: 2026-05-24_
+_Last updated: 2026-06-11_
 
 Smriti is built local-first. This policy describes what data Smriti handles
 and where it lives. Short version: **your conversations never leave your
@@ -52,19 +52,17 @@ Everything lives inside Chrome.
 
 ## Network requests Smriti makes
 
-Smriti makes exactly two types of outbound network requests:
+Smriti makes exactly one type of outbound network request:
 
-1. **One-time model download** — on first use, Smriti downloads the
-   all-MiniLM-L6-v2 ONNX embedding model (~25 MB) from Hugging Face's CDN.
-   This happens once and is cached permanently in the browser. The request
-   contains no user data.
+- **Backfill fetch** — when you click "Import history", Smriti uses your
+  existing browser session cookies to fetch your past conversations directly
+  from claude.ai or chatgpt.com (the same requests your browser would make
+  if you scrolled through your history). These requests go to Anthropic's
+  and OpenAI's servers respectively. Smriti never sees your password or
+  authentication tokens — it uses the session your browser already has.
 
-2. **Backfill fetch** — when you click "Import history", Smriti uses your
-   existing browser session cookies to fetch your past conversations directly
-   from claude.ai or chatgpt.com (the same requests your browser would make
-   if you scrolled through your history). These requests go to Anthropic's
-   and OpenAI's servers respectively. Smriti never sees your password or
-   authentication tokens — it uses the session your browser already has.
+The embedding model used for semantic search (all-MiniLM-L6-v2, ~25 MB)
+ships bundled inside the extension package — it is never downloaded.
 
 No conversation content, no message text, and no embeddings are ever
 transmitted to any server.
