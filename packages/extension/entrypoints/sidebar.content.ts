@@ -288,7 +288,7 @@ function mountSidebar(): void {
       return;
     }
     composerTimer = window.setTimeout(() => {
-      if (state.query.trim()) return;
+      if (capturePaused || state.query.trim()) return;
       const q = text.slice(0, 200);
       setState({ proactiveQuery: q });
       void runSearch(q);
@@ -326,6 +326,10 @@ function mountSidebar(): void {
       if (next !== capturePaused) {
         capturePaused = next;
         if (capturePaused) {
+          // Drop any in-flight debounce so a stale callback can't fire a
+          // recall after the user has paused capture.
+          if (composerTimer !== null) { clearTimeout(composerTimer); composerTimer = null; }
+          if (proactiveTimer !== null) { clearTimeout(proactiveTimer); proactiveTimer = null; }
           detachComposer();
         } else {
           attachComposer();
@@ -348,6 +352,7 @@ function mountSidebar(): void {
 
   // Proactive: live user message → search for related past conversations.
   window.addEventListener("message", (ev: MessageEvent) => {
+    if (capturePaused) return;                 // pausing capture pauses observation
     if (ev.source !== window) return;
     if (!isInjectMessage(ev.data)) return;
     const events = ev.data.events as CaptureEvent[];
@@ -364,7 +369,7 @@ function mountSidebar(): void {
     if (proactiveTimer !== null) clearTimeout(proactiveTimer);
     proactiveTimer = window.setTimeout(() => {
       // Don't override what the user has typed in the sidebar input.
-      if (state.query.trim()) return;
+      if (capturePaused || state.query.trim()) return;
       const q = text.slice(0, 140);
       setState({ proactiveQuery: q });
       void runSearch(q);

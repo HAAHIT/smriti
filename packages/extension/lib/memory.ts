@@ -307,7 +307,7 @@ export async function recallMemories(query: string, limit = 6): Promise<MemoryRe
   });
 
   if (byId.size === 0) {
-    console.debug(`[smriti:memory] recall "${q}" hits=0 ms=${Date.now() - t0}`);
+    console.debug(`[smriti:memory] recall qlen=${q.length} hits=0 ms=${Date.now() - t0}`);
     return [];
   }
 
@@ -350,8 +350,8 @@ export async function recallMemories(query: string, limit = 6): Promise<MemoryRe
   }
   const result = hits.sort((a, b) => b.score - a.score).slice(0, finalLimit);
   const ms = Date.now() - t0;
-  console.debug(`[smriti:memory] recall "${q}" hits=${result.length} ms=${ms}`);
-  if (ms > 200) console.warn(`[smriti:memory] slow recall (${ms}ms): "${q}"`);
+  console.debug(`[smriti:memory] recall qlen=${q.length} hits=${result.length} ms=${ms}`);
+  if (ms > 200) console.warn(`[smriti:memory] slow recall (${ms}ms) qlen=${q.length}`);
   return result;
 }
 

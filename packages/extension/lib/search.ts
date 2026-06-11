@@ -161,8 +161,8 @@ export async function search(query: string, limit = 20): Promise<SearchHit[]> {
     }));
 
   const ms = Date.now() - t0;
-  console.debug(`[smriti:search] "${q}" hits=${results.length} ms=${ms}`);
-  if (ms > 300) console.warn(`[smriti:search] slow query (${ms}ms): "${q}"`);
+  console.debug(`[smriti:search] qlen=${q.length} hits=${results.length} ms=${ms}`);
+  if (ms > 300) console.warn(`[smriti:search] slow query (${ms}ms) qlen=${q.length}`);
   return results;
 }
 
