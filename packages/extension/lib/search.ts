@@ -16,6 +16,7 @@ const FTS_K = 40;
 const VEC_K = 40;
 
 export async function search(query: string, limit = 20): Promise<SearchHit[]> {
+  const t0 = Date.now();
   const finalLimit = Math.min(limit, 100);
   const q = query.trim();
   if (!q) return [];
@@ -144,7 +145,7 @@ export async function search(query: string, limit = 20): Promise<SearchHit[]> {
     }
   });
 
-  return Array.from(byConv.values())
+  const results = Array.from(byConv.values())
     .sort((a, b) => b.score - a.score)
     .slice(0, finalLimit)
     .map((a) => ({
@@ -158,6 +159,11 @@ export async function search(query: string, limit = 20): Promise<SearchHit[]> {
       score: a.score,
       match: a.match,
     }));
+
+  const ms = Date.now() - t0;
+  console.debug(`[smriti:search] "${q}" hits=${results.length} ms=${ms}`);
+  if (ms > 300) console.warn(`[smriti:search] slow query (${ms}ms): "${q}"`);
+  return results;
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
