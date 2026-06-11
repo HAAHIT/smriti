@@ -1824,8 +1824,8 @@ function ImportCard({ platform, label, color }: { platform: "claude" | "chatgpt"
   useEffect(() => {
     browser.runtime.sendMessage({ kind: "get_backfill_progress" })
       .then((resp: unknown) => {
-        const r = resp as { ok?: boolean; progress?: { progress?: BackfillProgress } } | undefined;
-        const p = r?.ok ? r.progress?.progress : undefined;
+        const r = resp as { ok?: boolean; progress?: BackfillProgress | null } | undefined;
+        const p = r?.ok ? r.progress : undefined;
         if (p && p.platform === platform) applyProgress(p);
       }).catch(() => {});
   }, [platform, applyProgress]);

@@ -8,6 +8,7 @@
     "predev": "node scripts/fetch-model.mjs",
     "build": "wxt build",
     "prebuild": "node scripts/fetch-model.mjs",
+    "prezip": "node scripts/fetch-model.mjs",
     "zip": "wxt zip",
     "test:extract": "tsx scripts/test-extract.ts",
     "fetch:model": "node scripts/fetch-model.mjs",

@@ -173,6 +173,9 @@ function mountSidebar(): void {
   // composer watch below stops observing entirely — pausing capture should
   // pause all observation on this site, not just message ingestion.
   let capturePaused = false;
+  // Hoisted above pollCapturePaused (which references it from an IIFE invoked
+  // before the "Live composer watch" section runs).
+  let composerEl: HTMLElement | null = null;
 
   function setState(next: Partial<PanelState>): void {
     Object.assign(state, next);
@@ -264,6 +267,52 @@ function mountSidebar(): void {
   // on internal links, so we poll URL every 800ms. Cheap.
   setInterval(() => { void refreshCurrentChat(); }, 800);
 
+  // ─── Live composer watch (the core loop) ───
+  // Recall memories from what the user is typing into the host AI's message box
+  // — BEFORE they send — so they can inject context into the very prompt being
+  // written. This is what turns Smriti from an archive into a memory layer.
+  let composerTimer: number | null = null;
+  function readComposerText(el: HTMLElement): string {
+    return el.tagName === "TEXTAREA" || el.tagName === "INPUT"
+      ? (el as HTMLTextAreaElement).value
+      : el.innerText || el.textContent || "";
+  }
+  function onComposerInput(): void {
+    if (suppressComposerInput) return;        // our own injection fired this
+    if (capturePaused) return;                // pausing capture pauses observation
+    if (!composerEl || state.query.trim()) return; // sidebar search takes priority
+    const text = readComposerText(composerEl).trim();
+    if (composerTimer !== null) clearTimeout(composerTimer);
+    if (text.length < PROACTIVE_MIN_CHARS) {
+      if (state.proactiveQuery) setState({ proactiveQuery: null, memories: [], hero: null, others: [] });
+      return;
+    }
+    composerTimer = window.setTimeout(() => {
+      if (state.query.trim()) return;
+      const q = text.slice(0, 200);
+      setState({ proactiveQuery: q });
+      void runSearch(q);
+    }, PROACTIVE_DEBOUNCE_MS);
+  }
+  function attachComposer(): void {
+    if (capturePaused) return;                // don't attach if capture is paused
+    const el = findComposer();
+    if (el && el !== composerEl) {
+      composerEl?.removeEventListener("input", onComposerInput);
+      composerEl = el;
+      composerEl.addEventListener("input", onComposerInput);
+    }
+  }
+  function detachComposer(): void {
+    // Detach immediately — an attached-but-no-op listener still observes
+    // every keystroke, which "pause" should prevent.
+    composerEl?.removeEventListener("input", onComposerInput);
+    composerEl = null;
+  }
+  attachComposer();
+  // Re-attach across SPA navigation / editor remounts. Cheap.
+  setInterval(attachComposer, 1500);
+
   // Capture-pause status — polled on boot and every 60s. Settings → Capture
   // toggles this per host; hostnames are stored as claude.ai / chatgpt.com /
   // gemini.google.com (see platformToHost in background.ts).
@@ -273,7 +322,15 @@ function mountSidebar(): void {
         | { ok: boolean; paused?: string[] }
         | undefined;
       const paused = resp?.ok && Array.isArray(resp.paused) ? resp.paused : [];
-      capturePaused = paused.includes(location.hostname.replace(/^www\./, ""));
+      const next = paused.includes(location.hostname.replace(/^www\./, ""));
+      if (next !== capturePaused) {
+        capturePaused = next;
+        if (capturePaused) {
+          detachComposer();
+        } else {
+          attachComposer();
+        }
+      }
     } catch { /* background not reachable; quiet */ }
     setTimeout(pollCapturePaused, 60_000);
   })();
@@ -313,47 +370,6 @@ function mountSidebar(): void {
       void runSearch(q);
     }, PROACTIVE_DEBOUNCE_MS);
   });
-
-  // ─── Live composer watch (the core loop) ───
-  // Recall memories from what the user is typing into the host AI's message box
-  // — BEFORE they send — so they can inject context into the very prompt being
-  // written. This is what turns Smriti from an archive into a memory layer.
-  let composerEl: HTMLElement | null = null;
-  let composerTimer: number | null = null;
-  function readComposerText(el: HTMLElement): string {
-    return el.tagName === "TEXTAREA" || el.tagName === "INPUT"
-      ? (el as HTMLTextAreaElement).value
-      : el.innerText || el.textContent || "";
-  }
-  function onComposerInput(): void {
-    if (suppressComposerInput) return;        // our own injection fired this
-    if (capturePaused) return;                // pausing capture pauses observation
-    if (!composerEl || state.query.trim()) return; // sidebar search takes priority
-    const text = readComposerText(composerEl).trim();
-    if (composerTimer !== null) clearTimeout(composerTimer);
-    if (text.length < PROACTIVE_MIN_CHARS) {
-      if (state.proactiveQuery) setState({ proactiveQuery: null, memories: [], hero: null, others: [] });
-      return;
-    }
-    composerTimer = window.setTimeout(() => {
-      if (state.query.trim()) return;
-      const q = text.slice(0, 200);
-      setState({ proactiveQuery: q });
-      void runSearch(q);
-    }, PROACTIVE_DEBOUNCE_MS);
-  }
-  function attachComposer(): void {
-    if (capturePaused) return;                // don't attach if capture is paused
-    const el = findComposer();
-    if (el && el !== composerEl) {
-      composerEl?.removeEventListener("input", onComposerInput);
-      composerEl = el;
-      composerEl.addEventListener("input", onComposerInput);
-    }
-  }
-  attachComposer();
-  // Re-attach across SPA navigation / editor remounts. Cheap.
-  setInterval(attachComposer, 1500);
 
   render = () => {
     ui.innerHTML = "";
@@ -910,7 +926,7 @@ function currentPlatform(): Platform {
 
 // Pre-filled "report a broken site" GitHub issue link — selectors on these
 // sites change often and we have no telemetry, so the user is the sensor.
-function reportIssueUrl(platform: string): string {
+function reportIssueUrl(platform: Platform): string {
   const v = chrome.runtime.getManifest().version;
   return (
     `https://github.com/HAAHIT/smriti/issues/new?title=${encodeURIComponent(`[${platform}] `)}` +

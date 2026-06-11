@@ -67,7 +67,8 @@ for (const needle of MUST_HAVE) {
   ok ? pass++ : fail++;
 }
 for (const needle of MUST_NOT_CAPTURE) {
-  const ok = !allTexts.some((t) => t.includes(needle));
+  const n = needle.toLowerCase();
+  const ok = !allTexts.some((t) => t.toLowerCase().includes(n));
   console.log(`${ok ? "✓" : "✗"} must NOT capture "${needle}"`);
   ok ? pass++ : fail++;
 }

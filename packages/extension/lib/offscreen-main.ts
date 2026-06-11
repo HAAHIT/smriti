@@ -48,7 +48,7 @@ import {
   extractionSweep,
   pendingExtractionCount,
 } from "../lib/memory.js";
-import type { CaptureEvent, Platform, MemoryKind, NMResponse } from "@smriti/shared";
+import type { CaptureEvent, Platform, MemoryKind, MemorySource, NMResponse } from "@smriti/shared";
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 
@@ -210,10 +210,13 @@ async function handleMessage(
     }
 
     case "add_memory": {
+      const validKinds: MemoryKind[] = ["identity", "preference", "project", "decision", "fact"];
+      const kind = validKinds.includes(m.kind as MemoryKind) ? (m.kind as MemoryKind) : "fact";
+      const source: MemorySource = m.source === "auto" ? "auto" : "manual";
       const memory = addMemory(
         m.text as string,
-        (m.kind as MemoryKind | undefined) ?? "fact",
-        (m.source as "auto" | "manual" | undefined) ?? "manual",
+        kind,
+        source,
         {
           platform: (m.platform as Platform | null | undefined) ?? null,
           conversationId: (m.conversation_id as string | null | undefined) ?? null,

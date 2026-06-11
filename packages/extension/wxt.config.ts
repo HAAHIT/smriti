@@ -1,8 +1,11 @@
 import { defineConfig } from "wxt";
 
 export default defineConfig({
+  // ─── Modules ─────────────────────────────────────────────────────────────
   modules: ["@wxt-dev/module-react"],
   srcDir: ".",
+
+  // ─── Manifest ────────────────────────────────────────────────────────────
   manifest: {
     name: "Smriti",
     description:
@@ -38,6 +41,8 @@ export default defineConfig({
     },
     minimum_chrome_version: "116",
   },
+
+  // ─── Vite ────────────────────────────────────────────────────────────────
   vite: () => ({
     assetsInclude: ["**/*.wasm"],
     optimizeDeps: {
