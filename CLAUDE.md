@@ -82,6 +82,8 @@ npm run dev              # live dev
 ```
 
 ## Known gaps / next steps
+**`RELEASE_PLAN.md` is the executable pre-release PRD (tasks T1–T11 with
+anchors, snippets, and acceptance criteria) — work from it, in order.**
 - Onboarding copy still search-centric; reframe to memory.
 - Injection selectors need live tuning per platform (sites change often).
 - BYOK LLM extraction (optional) would lift memory quality above heuristics.
