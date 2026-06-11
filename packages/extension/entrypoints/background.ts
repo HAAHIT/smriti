@@ -202,6 +202,13 @@ export default defineBackground(() => {
         return true;
       }
 
+      // ── Get capture-paused hosts (content scripts self-gate on this) ─────
+
+      if (kind === "get_capture_paused") {
+        sendResponse({ ok: true, paused: [...pausedHosts] });
+        return true;
+      }
+
       // ── Get backfill progress (for options page) ─────────────────────────
 
       if (kind === "get_backfill_progress") {

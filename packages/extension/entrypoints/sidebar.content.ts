@@ -169,6 +169,10 @@ function mountSidebar(): void {
   // Set true while we inject, so the composer's resulting input event doesn't
   // re-trigger recall on the text we just wrote.
   let suppressComposerInput = false;
+  // Mirrors the per-host capture pause (Settings → Capture). When true, the
+  // composer watch below stops observing entirely — pausing capture should
+  // pause all observation on this site, not just message ingestion.
+  let capturePaused = false;
 
   function setState(next: Partial<PanelState>): void {
     Object.assign(state, next);
@@ -260,6 +264,20 @@ function mountSidebar(): void {
   // on internal links, so we poll URL every 800ms. Cheap.
   setInterval(() => { void refreshCurrentChat(); }, 800);
 
+  // Capture-pause status — polled on boot and every 60s. Settings → Capture
+  // toggles this per host; hostnames are stored as claude.ai / chatgpt.com /
+  // gemini.google.com (see platformToHost in background.ts).
+  void (async function pollCapturePaused() {
+    try {
+      const resp = await browser.runtime.sendMessage({ kind: "get_capture_paused" }) as
+        | { ok: boolean; paused?: string[] }
+        | undefined;
+      const paused = resp?.ok && Array.isArray(resp.paused) ? resp.paused : [];
+      capturePaused = paused.includes(location.hostname.replace(/^www\./, ""));
+    } catch { /* background not reachable; quiet */ }
+    setTimeout(pollCapturePaused, 60_000);
+  })();
+
   // Footer indexing status — polled.
   void (async function pollIndex() {
     try {
@@ -309,6 +327,7 @@ function mountSidebar(): void {
   }
   function onComposerInput(): void {
     if (suppressComposerInput) return;        // our own injection fired this
+    if (capturePaused) return;                // pausing capture pauses observation
     if (!composerEl || state.query.trim()) return; // sidebar search takes priority
     const text = readComposerText(composerEl).trim();
     if (composerTimer !== null) clearTimeout(composerTimer);
@@ -324,6 +343,7 @@ function mountSidebar(): void {
     }, PROACTIVE_DEBOUNCE_MS);
   }
   function attachComposer(): void {
+    if (capturePaused) return;                // don't attach if capture is paused
     const el = findComposer();
     if (el && el !== composerEl) {
       composerEl?.removeEventListener("input", onComposerInput);
