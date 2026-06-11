@@ -309,35 +309,59 @@ function mountSidebar(): void {
     composerEl?.removeEventListener("input", onComposerInput);
     composerEl = null;
   }
-  attachComposer();
-  // Re-attach across SPA navigation / editor remounts. Cheap.
-  setInterval(attachComposer, 1500);
 
-  // Capture-pause status — polled on boot and every 60s. Settings → Capture
-  // toggles this per host; hostnames are stored as claude.ai / chatgpt.com /
-  // gemini.google.com (see platformToHost in background.ts).
-  void (async function pollCapturePaused() {
+  // Applies a capture-pause transition: tears down (or re-attaches) the
+  // composer watch, and — when pausing — invalidates any in-flight
+  // runSearch() and clears recall state, so a response that was already
+  // dispatched can't repopulate the panel after the user paused.
+  function applyCapturePaused(next: boolean): void {
+    if (next === capturePaused) return;
+    capturePaused = next;
+    if (capturePaused) {
+      searchSeq += 1;
+      setState({ proactiveQuery: null, loading: false, hero: null, others: [], memories: [] });
+      if (composerTimer !== null) { clearTimeout(composerTimer); composerTimer = null; }
+      if (proactiveTimer !== null) { clearTimeout(proactiveTimer); proactiveTimer = null; }
+      detachComposer();
+    } else {
+      attachComposer();
+    }
+  }
+
+  // Fetches the paused-hosts list from background and applies it. Hostnames
+  // are stored as claude.ai / chatgpt.com / gemini.google.com (see
+  // platformToHost in background.ts).
+  async function syncCapturePaused(): Promise<void> {
     try {
       const resp = await browser.runtime.sendMessage({ kind: "get_capture_paused" }) as
         | { ok: boolean; paused?: string[] }
         | undefined;
       const paused = resp?.ok && Array.isArray(resp.paused) ? resp.paused : [];
-      const next = paused.includes(location.hostname.replace(/^www\./, ""));
-      if (next !== capturePaused) {
-        capturePaused = next;
-        if (capturePaused) {
-          // Drop any in-flight debounce so a stale callback can't fire a
-          // recall after the user has paused capture.
-          if (composerTimer !== null) { clearTimeout(composerTimer); composerTimer = null; }
-          if (proactiveTimer !== null) { clearTimeout(proactiveTimer); proactiveTimer = null; }
-          detachComposer();
-        } else {
-          attachComposer();
-        }
-      }
+      applyCapturePaused(paused.includes(location.hostname.replace(/^www\./, "")));
     } catch { /* background not reachable; quiet */ }
-    setTimeout(pollCapturePaused, 60_000);
+  }
+
+  // Hydrate pause state BEFORE attaching the composer watch, so a paused
+  // host is never observed even briefly on boot. Re-sync every 60s as a
+  // fallback — Settings toggles also broadcast capture_toggle (below) for
+  // an instant update on open tabs.
+  void (async function bootCapture() {
+    await syncCapturePaused();
+    attachComposer();
+    // Re-attach across SPA navigation / editor remounts. Cheap.
+    setInterval(attachComposer, 1500);
+    setInterval(syncCapturePaused, 60_000);
   })();
+
+  // Settings → Capture toggles broadcast this so open tabs react instantly
+  // instead of waiting for the next 60s sync.
+  browser.runtime.onMessage.addListener((msg: unknown) => {
+    if (typeof msg !== "object" || msg === null) return;
+    const m = msg as { kind?: string; host?: string; off?: boolean };
+    if (m.kind !== "capture_toggle") return;
+    if (m.host !== location.hostname.replace(/^www\./, "")) return;
+    applyCapturePaused(!!m.off);
+  });
 
   // Footer indexing status — polled.
   void (async function pollIndex() {
