@@ -27,7 +27,7 @@ account, no server, no telemetry.
 ```
 packages/
   shared/       Shared TypeScript types + protocol contract
-  extension/    The product — browser extension (Chrome + Firefox via WXT)
+  extension/    The product — browser extension (Chrome/Chromium via WXT)
   helper/       Legacy Node service (superseded by the offscreen doc)
   mcp-server/   Legacy MCP server
 ```
