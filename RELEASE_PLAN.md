@@ -68,8 +68,8 @@ try {
 ```
 
 **Acceptance:**
-- [ ] Offscreen console logs `storage.persist: granted` on boot.
-- [ ] Verification loop green.
+- [ ] Offscreen console logs `storage.persist: granted` on boot. _(manual QA — requires loaded extension)_
+- [x] Verification loop green.
 
 ## T2. Memory-first onboarding funnel (kill the cold start) — L
 
@@ -145,6 +145,9 @@ chrome.runtime.onInstalled.addListener((d) => {
    the post-onboarding home for imports.
 
 **Acceptance:**
+_Code re-read end-to-end and matches spec (copy, `ImportCard` backfill pattern,
+stats breakdown, zero-state, finish row). Items below need a loaded extension
+to confirm._
 - [ ] Fresh install (remove + re-load unpacked) auto-opens `options.html#/welcome`.
 - [ ] Step 2 starts a real Claude or ChatGPT backfill and shows live progress
       (requires being logged into that site in the same profile).
@@ -152,7 +155,7 @@ chrome.runtime.onInstalled.addListener((d) => {
       and the zero-state copy when there's no history.
 - [ ] Completing onboarding lands in the app; reloading does not re-show it.
 - [ ] No step ever dead-ends: every step has a skip/continue path.
-- [ ] Verification loop green.
+- [x] Verification loop green.
 
 ## T3. Clipboard fallback — injection must never dead-end — S
 
@@ -210,7 +213,7 @@ async function copyToClipboard(text: string): Promise<boolean> {
       "Copied…", and Ctrl+V pastes the formatted memory block. Revert any
       temporary change.
 - [ ] Normal injection path unchanged on claude.ai.
-- [ ] Verification loop green.
+- [x] Verification loop green.
 
 ## T4. Ephemeral-fact suppression + "recently learned" review — M
 
@@ -280,13 +283,13 @@ const MUST_NOT_CAPTURE = ["Friday"];
    the existing serif/sans/mono + `--accent` styling; no new dependencies.
 
 **Acceptance:**
-- [ ] `npm run test:extract` passes with the new assertions ("Friday" never
+- [x] `npm run test:extract` passes with the new assertions ("Friday" never
       captured; "blue color scheme" captured).
-- [ ] "Let's use Tailwind" (decision) and identity/preference samples still
+- [x] "Let's use Tailwind" (decision) and identity/preference samples still
       extract — no regression in the existing MUST_HAVE list.
 - [ ] Memory view shows the strip after "Build my memory"; pin/delete work
-      from it.
-- [ ] Verification loop green.
+      from it. _(manual QA)_
+- [x] Verification loop green.
 
 ## T5. Export must include memories; add import — M
 
@@ -342,11 +345,12 @@ const payload = {
 
 **Acceptance:**
 - [ ] Export file contains `version: 2` and a non-empty `memories` array (after
-      building memory).
+      building memory). _(code confirms `onExport` writes both — needs a live
+      export to fully verify)_
 - [ ] Settings → Danger zone wipe, then Import of that file restores the
-      memories (Memory view repopulates; pinned restored).
-- [ ] Malformed/irrelevant JSON shows an error message, no crash.
-- [ ] Verification loop green.
+      memories (Memory view repopulates; pinned restored). _(manual QA)_
+- [ ] Malformed/irrelevant JSON shows an error message, no crash. _(manual QA)_
+- [x] Verification loop green.
 
 ---
 
@@ -440,11 +444,14 @@ if (env.backends?.onnx?.wasm) {
 - [ ] Fresh profile, vendored build: open the offscreen console's Network tab —
       **zero** requests to `huggingface.co` or any CDN; model loads
       (`[smriti:embed] model ready` log) and `embed_status` reports the model.
-- [ ] Search returns `vec`/`hybrid` matches (embeddings actually work).
-- [ ] `npm run build` from a clean checkout self-fetches and succeeds.
+      _(manual QA)_
+- [ ] Search returns `vec`/`hybrid` matches (embeddings actually work). _(manual QA)_
+- [x] `npm run build` from a clean checkout self-fetches and succeeds.
 - [ ] Landing page / privacy copy updated: `docs/index.html`, `docs/privacy.html`,
       and `PRIVACY_POLICY.md` currently describe a one-time model download —
       change to "zero network requests" only AFTER verifying the above.
+      _(docs already updated per commit b39d39a; network-tab verification
+      above is still the pending prerequisite)_
 
 ## T7. Ship Chrome-only, deliberately — XS
 
@@ -463,7 +470,7 @@ and silently do nothing.
    Smriti's engine runs in an Offscreen Document, which Firefox doesn't support."
 
 **Acceptance:**
-- [ ] `npm run build` (chrome-mv3) still green; no `firefox` references left in
+- [x] `npm run build` (chrome-mv3) still green; no `firefox` references left in
       extension config/scripts.
 
 ## T8. Chrome Web Store review pack — S (copywriting)
@@ -505,7 +512,7 @@ listing copy leads with archive/search — it must lead with memory.
    do not invent one.
 
 **Acceptance:**
-- [ ] `STORE_LISTING.md` has the review-notes section and memory-first
+- [x] `STORE_LISTING.md` has the review-notes section and memory-first
       description; remaining placeholders (if any) are explicitly listed at
       the top of the file.
 
@@ -572,7 +579,8 @@ a minute (or on reload).
 messages. Measure before users do.
 
 **Implementation:**
-1. Add lightweight timing logs (console.debug, no flag needed):
+1. Add lightweight timing logs (console.debug, no flag needed) — **done**,
+   verified in code:
    - `lib/search.ts` `search()` — total ms; warn if > 300 ms.
    - `lib/memory.ts` `recallMemories()` — total ms; warn if > 200 ms.
    - `lib/index-worker.ts` tick log — append elapsed ms.
@@ -590,14 +598,17 @@ messages. Measure before users do.
 
 # Release gate — final checklist before CWS submission
 
-- [ ] T1–T5 (all P0) merged; T6–T8 strongly recommended before submitting.
-- [ ] `npx tsc --noEmit`, `npm run test:extract`, `npm run build` all green.
+- [x] T1–T5 (all P0) merged; T6–T8 strongly recommended before submitting.
+      (T1–T11 all merged via PR #1 + review fixups.)
+- [x] `npx tsc --noEmit`, `npm run test:extract`, `npm run build` all green.
 - [ ] Fresh-profile end-to-end: install → onboarding auto-opens → import
       history → build memory → open claude.ai → type a prompt → recall card →
-      inject works → sent message contains the context block.
-- [ ] Export contains memories; wipe + import restores them.
-- [ ] DevTools network on offscreen doc: zero external requests (post-T6).
+      inject works → sent message contains the context block. _(manual QA)_
+- [ ] Export contains memories; wipe + import restores them. _(manual QA)_
+- [ ] DevTools network on offscreen doc: zero external requests (post-T6). _(manual QA)_
 - [ ] Bump version to `0.1.0` in `packages/extension/package.json` (wxt
       manifest version follows it) and tag the release commit.
+      _(version is already 0.1.0; release tag not yet created)_
 - [ ] CWS dashboard: listing copy + review notes from `STORE_LISTING.md`,
       existing screenshots in repo, privacy disclosures = "no data collected".
+      _(external step — copy is ready in STORE_LISTING.md)_
