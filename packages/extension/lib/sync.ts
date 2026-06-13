@@ -22,6 +22,7 @@ import {
   encryptJson,
   decryptJson,
 } from "./sync-crypto.js";
+import { decideMerge, type MergeOutcome } from "./sync-merge.js";
 import type { MemoryKind, Platform } from "@smriti/shared";
 
 // Replace after deploying packages/sync-relay (`wrangler deploy`) — also
@@ -241,41 +242,30 @@ function exportAllMemories(): ChangesetMemory[] {
 
 // ─── Merge ──────────────────────────────────────────────────────────────────
 
-type MergeOutcome = "inserted" | "updated" | "deleted" | "skipped";
-
 function mergeRemoteMemory(remote: ChangesetMemory): MergeOutcome {
-  const local = dbGet<{ id: string; norm_text: string; updated_at: string; deleted_at: string | null }>(
-    "SELECT id, norm_text, updated_at, deleted_at FROM memories WHERE id = ?",
-    [remote.id],
-  );
+  const local =
+    dbGet<{ id: string; norm_text: string; updated_at: string; deleted_at: string | null }>(
+      "SELECT id, norm_text, updated_at, deleted_at FROM memories WHERE id = ?",
+      [remote.id],
+    ) ?? null;
 
-  if (!local) {
-    if (remote.deleted_at !== null) return "skipped"; // tombstone for an id we never had
-    if (normTextCollides(remote.norm_text, remote.id)) return "skipped";
-    insertRemoteMemory(remote);
-    return "inserted";
-  }
-
-  // Local delete always wins — no resurrection. The tombstone re-propagates
-  // to the peer on this device's next push.
-  if (local.deleted_at) return "skipped";
-
-  if (remote.deleted_at !== null) {
-    if (remote.updated_at > local.updated_at) {
+  const outcome = decideMerge(remote, local, normTextCollides);
+  switch (outcome) {
+    // The deleted_at === null guards are no-ops at runtime (decideMerge only
+    // returns inserted/updated for non-tombstones); they narrow remote's type.
+    case "inserted":
+      if (remote.deleted_at === null) insertRemoteMemory(remote);
+      break;
+    case "updated":
+      if (remote.deleted_at === null) updateFromRemote(remote, local!.norm_text);
+      break;
+    case "deleted":
       deleteMemory(remote.id);
-      return "deleted";
-    }
-    return "skipped";
+      break;
+    case "skipped":
+      break;
   }
-
-  if (remote.updated_at <= local.updated_at) return "skipped"; // local is newer (or equal); will be pushed
-
-  if (remote.norm_text !== local.norm_text && normTextCollides(remote.norm_text, remote.id)) {
-    return "skipped"; // remote's new text collides with a different local memory; resolves on a future sync
-  }
-
-  updateFromRemote(remote, local.norm_text);
-  return "updated";
+  return outcome;
 }
 
 function normTextCollides(normText: string, exceptId: string): boolean {

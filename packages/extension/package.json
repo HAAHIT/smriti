@@ -11,6 +11,7 @@
     "prezip": "node scripts/fetch-model.mjs",
     "zip": "wxt zip",
     "test:extract": "tsx scripts/test-extract.ts",
+    "test:sync": "tsx scripts/test-sync.ts",
     "fetch:model": "node scripts/fetch-model.mjs",
     "postinstall": "wxt prepare"
   },
