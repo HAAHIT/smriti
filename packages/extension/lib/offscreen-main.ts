@@ -48,6 +48,7 @@ import {
   extractionSweep,
   pendingExtractionCount,
 } from "../lib/memory.js";
+import { getSyncStatus, setupSync, joinSync, syncNow, disableSync } from "../lib/sync.js";
 import type { CaptureEvent, Platform, MemoryKind, MemorySource, NMResponse } from "@smriti/shared";
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
@@ -269,6 +270,19 @@ async function handleMessage(
     case "wipe_archive": {
       const cleared = wipeArchive();
       return { cleared };
+    }
+
+    case "sync_status":
+      return getSyncStatus();
+    case "sync_setup":
+      return setupSync();
+    case "sync_join":
+      return joinSync(m.recovery_code as string);
+    case "sync_now":
+      return syncNow();
+    case "sync_disable": {
+      await disableSync();
+      return { ok: true };
     }
 
     case "flush": {
