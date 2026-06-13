@@ -2271,6 +2271,9 @@ function SettingsView({ totals, embed, nav }: {
         />
       </Section>
 
+      {/* Sync */}
+      <SyncSection />
+
       {/* Export */}
       <Section title="Export">
         <div style={{ color: "var(--muted)", fontSize: 12, marginBottom: 10 }}>
@@ -2356,6 +2359,168 @@ function SettingsView({ totals, embed, nav }: {
         Nothing is sent over the network except the requests Claude.ai / ChatGPT / Gemini already make from your browser.
       </p>
     </div>
+  );
+}
+
+// ─── SyncSection ─────────────────────────────────────────────────────────────
+// Optional end-to-end-encrypted memory sync. The recovery code is the only
+// secret and never leaves the device unencrypted; the relay sees opaque blobs.
+function SyncSection() {
+  const [status, setStatus] = useState<{ enabled: boolean; syncId: string | null; lastSyncedAt: string | null } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [newCode, setNewCode] = useState<string | null>(null);
+  const [showJoin, setShowJoin] = useState(false);
+  const [joinCode, setJoinCode] = useState("");
+  const [copied, setCopied] = useState(false);
+
+  const refresh = () =>
+    sendToHelper({ type: "sync_status" })
+      .then((r) => setStatus({
+        enabled: !!r.enabled,
+        syncId: (r.syncId as string) ?? null,
+        lastSyncedAt: (r.lastSyncedAt as string) ?? null,
+      }))
+      .catch(() => {});
+
+  useEffect(() => { refresh(); }, []);
+
+  const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+  const summary = (r: AnyResp) => {
+    const ins = (r.inserted as number) ?? 0, upd = (r.updated as number) ?? 0, del = (r.deleted as number) ?? 0;
+    return ins + upd + del === 0 ? "Already up to date." : `Synced — ${ins} added, ${upd} updated, ${del} removed.`;
+  };
+
+  const onSetup = async () => {
+    setBusy(true); setMsg(null);
+    try {
+      const r = await sendToHelper({ type: "sync_setup" });
+      if (r.recoveryCode) setNewCode(r.recoveryCode as string);
+      await sendToHelper({ type: "sync_now" }).catch(() => {}); // first push; relay may not exist yet
+      await refresh();
+    } catch (e) { setMsg(errText(e)); } finally { setBusy(false); }
+  };
+
+  const onJoin = async () => {
+    setBusy(true); setMsg(null);
+    try {
+      await sendToHelper({ type: "sync_join", recovery_code: joinCode });
+      setJoinCode(""); setShowJoin(false);
+      const r = await sendToHelper({ type: "sync_now" });
+      setMsg(summary(r));
+      await refresh();
+    } catch (e) { setMsg(errText(e)); } finally { setBusy(false); }
+  };
+
+  const onSyncNow = async () => {
+    setBusy(true); setMsg(null);
+    try {
+      const r = await sendToHelper({ type: "sync_now" });
+      setMsg(summary(r));
+      await refresh();
+    } catch (e) { setMsg(errText(e)); } finally { setBusy(false); }
+  };
+
+  const onDisable = async () => {
+    setBusy(true); setMsg(null);
+    try {
+      await sendToHelper({ type: "sync_disable" });
+      setNewCode(null);
+      await refresh();
+    } catch (e) { setMsg(errText(e)); } finally { setBusy(false); }
+  };
+
+  const copyCode = () => {
+    if (!newCode) return;
+    navigator.clipboard.writeText(newCode)
+      .then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); })
+      .catch(() => {});
+  };
+
+  const btn = (primary?: boolean): React.CSSProperties => ({
+    background: primary ? "var(--accent)" : "var(--surface)",
+    border: primary ? "none" : "1px solid var(--hairline-strong)",
+    borderRadius: 4, padding: "8px 14px", fontSize: 13,
+    fontFamily: "var(--sans)", fontWeight: primary ? 600 : 500,
+    color: primary ? "#f6f0e3" : "var(--ink)",
+    cursor: busy ? "default" : "pointer",
+  });
+
+  return (
+    <Section title="Sync">
+      <div style={{ color: "var(--muted)", fontSize: 12, marginBottom: 10 }}>
+        Sync your memories across devices, end-to-end encrypted. Smriti's relay only ever sees an
+        opaque encrypted blob — never your memories, your recovery code, or the key.
+      </div>
+
+      {newCode && (
+        <div style={{
+          border: "1px solid var(--accent)", borderRadius: 6, padding: "12px 14px",
+          marginBottom: 12, background: "var(--chip-bg)",
+        }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, color: "var(--accent)" }}>
+            Save your recovery code
+          </div>
+          <code className="mono" style={{
+            display: "block", fontSize: 14, letterSpacing: 0.5, wordBreak: "break-all",
+            background: "var(--surface)", border: "1px solid var(--hairline)",
+            borderRadius: 4, padding: "8px 10px", marginBottom: 8,
+          }}>{newCode}</code>
+          <div style={{ fontSize: 11.5, color: "var(--ink-2)", lineHeight: 1.5, marginBottom: 10 }}>
+            This is the <strong>only</strong> way to access your synced memories on another device.
+            Store it somewhere safe — Smriti cannot recover it for you.
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={copyCode} style={btn()}>{copied ? "Copied ✓" : "Copy code"}</button>
+            <button onClick={() => setNewCode(null)} style={btn(true)}>I&apos;ve saved it</button>
+          </div>
+        </div>
+      )}
+
+      {status?.enabled ? (
+        <>
+          <SettingRow
+            label="Status"
+            right={
+              <span className="mono" style={{ color: "var(--ink-2)", fontSize: 12 }}>
+                {status.lastSyncedAt ? `Enabled · synced ${relativeTime(status.lastSyncedAt)}` : "Enabled · not yet synced"}
+              </span>
+            }
+          />
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+            <button onClick={onSyncNow} disabled={busy} style={btn(true)}>{busy ? "Syncing…" : "Sync now"}</button>
+            <button onClick={onDisable} disabled={busy} style={btn()}>Disable sync</button>
+          </div>
+        </>
+      ) : (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button onClick={onSetup} disabled={busy} style={btn(true)}>{busy ? "Working…" : "Set up sync"}</button>
+          <button onClick={() => setShowJoin((v) => !v)} disabled={busy} style={btn()}>Join with a recovery code</button>
+        </div>
+      )}
+
+      {showJoin && !status?.enabled && (
+        <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+          <input
+            value={joinCode}
+            onChange={(e) => setJoinCode(e.target.value)}
+            placeholder="xxxx-xxxx-xxxx-xxxx-…"
+            spellCheck={false}
+            className="mono"
+            style={{
+              flex: 1, minWidth: 220, fontSize: 13, padding: "8px 10px",
+              border: "1px solid var(--hairline-strong)", borderRadius: 4,
+              background: "var(--surface)", color: "var(--ink)",
+            }}
+          />
+          <button onClick={onJoin} disabled={busy || joinCode.trim().length === 0} style={btn(true)}>Join</button>
+        </div>
+      )}
+
+      {msg && (
+        <div style={{ marginTop: 10, fontSize: 12, color: "var(--ink-2)", fontStyle: "italic" }}>{msg}</div>
+      )}
+    </Section>
   );
 }
 
