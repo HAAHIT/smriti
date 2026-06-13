@@ -20,3 +20,7 @@ packages/helper/*.db-shm
 # Vendored embedding model + ONNX runtime (fetched via `npm run fetch:model`)
 packages/extension/public/models/
 packages/extension/public/ort/
+
+# Cloudflare Worker (sync-relay) local state
+.wrangler/
+.dev.vars

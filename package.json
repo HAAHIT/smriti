@@ -5,7 +5,8 @@
   "description": "Local-first archive + search + reference layer for AI conversations across Claude, ChatGPT, Gemini, and Claude Code.",
   "workspaces": [
     "packages/shared",
-    "packages/extension"
+    "packages/extension",
+    "packages/sync-relay"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",

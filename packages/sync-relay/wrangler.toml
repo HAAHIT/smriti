@@ -1,0 +1,14 @@
+# Cloudflare Worker config for the Smriti sync relay.
+# Deploy steps and post-deploy wiring are in README.md.
+
+name = "smriti-sync-relay"
+main = "src/index.ts"
+compatibility_date = "2024-09-01"
+
+# KV namespace that holds the encrypted blobs. Create it once with:
+#   npx wrangler kv namespace create SYNC_KV
+# then paste the returned id below (and an id under [env... preview] if you
+# want `wrangler dev` to use a separate preview namespace).
+[[kv_namespaces]]
+binding = "SYNC_KV"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
