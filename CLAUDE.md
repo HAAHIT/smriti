@@ -11,8 +11,9 @@ feature, memory is the product.) Goal: fundable startup / YC.
 
 ### Strategic decisions (locked)
 - **Direction:** memory layer, not just search/archive.
-- **Data model:** local-first by default + (planned) optional end-to-end-encrypted
-  sync. The privacy wedge is the moat; sync is what makes it a company.
+- **Data model:** local-first by default + optional end-to-end-encrypted sync
+  (built — memories only, zero-knowledge relay). The privacy wedge is the moat;
+  sync is what makes it a company.
 - **Hero feature (built):** the memory injection loop — recall relevant memory as
   you type and inject it into the composer.
 
@@ -26,6 +27,8 @@ packages/
   extension/   The product (WXT, Chrome/Firefox MV3)
   helper/      LEGACY Node service — superseded by the offscreen doc. Ignore.
   mcp-server/  LEGACY MCP server. Ignore for now (could return as a B2B/dev surface).
+  sync-relay/  Cloudflare Worker + KV — zero-knowledge encrypted-blob relay for
+               optional memory sync. Stores opaque ciphertext only.
 ```
 
 Extension internals:
@@ -87,7 +90,12 @@ anchors, snippets, and acceptance criteria) — work from it, in order.**
 - Onboarding copy still search-centric; reframe to memory.
 - Injection selectors need live tuning per platform (sites change often).
 - BYOK LLM extraction (optional) would lift memory quality above heuristics.
-- Optional E2E-encrypted sync (the fundability piece) is not built yet.
+- Optional E2E-encrypted sync (the fundability piece) is built (memories only):
+  `lib/sync-crypto.ts` (HKDF + AES-256-GCM), `lib/sync.ts` (whole-state merge),
+  `lib/sync-merge.ts` (pure decider, `npm run test:sync`), Settings → Sync UI,
+  and `packages/sync-relay`. Remaining manual step: `wrangler deploy` the relay,
+  then swap the `smriti-sync-relay.YOUR-SUBDOMAIN.workers.dev` placeholder in
+  `lib/sync.ts` + `wxt.config.ts` (×2). See `packages/sync-relay/README.md`.
 - Not yet shipped to Chrome Web Store (`STORE_LISTING.md` has placeholders).
 
 ## Conventions
