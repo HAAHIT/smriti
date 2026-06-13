@@ -61,7 +61,7 @@ export function storeMemory(input: StoreInput): string | null {
 
   // Exact dup (also enforced by UNIQUE(norm_text)).
   const exact = dbGet<{ id: string; salience: number }>(
-    "SELECT id, salience FROM memories WHERE norm_text = ? AND status = 'active'",
+    "SELECT id, salience FROM memories WHERE norm_text = ? AND status = 'active' AND deleted_at IS NULL",
     [norm],
   );
   if (exact) {
@@ -73,7 +73,7 @@ export function storeMemory(input: StoreInput): string | null {
   // same kind. Cheap, no embeddings required, keeps the store clean.
   const ts = tokenSet(norm);
   const recent = dbAll<{ id: string; norm_text: string; salience: number }>(
-    "SELECT id, norm_text, salience FROM memories WHERE status = 'active' AND kind = ? ORDER BY rowid DESC LIMIT 400",
+    "SELECT id, norm_text, salience FROM memories WHERE status = 'active' AND deleted_at IS NULL AND kind = ? ORDER BY rowid DESC LIMIT 400",
     [input.kind],
   );
   for (const r of recent) {
@@ -195,7 +195,7 @@ export function getPendingMemoryEmbeddings(limit: number): Array<{ id: string; t
     `SELECT m.id AS id, m.text AS text
      FROM memories m
      LEFT JOIN memory_embeddings e ON e.memory_id = m.id
-     WHERE e.memory_id IS NULL AND m.status = 'active' AND length(m.text) >= 8
+     WHERE e.memory_id IS NULL AND m.status = 'active' AND m.deleted_at IS NULL AND length(m.text) >= 8
      ORDER BY m.pinned DESC, m.rowid DESC
      LIMIT ?`,
     [limit],
@@ -223,7 +223,7 @@ function searchMemoriesByVector(queryVec: Float32Array, topK: number): MemVecHit
     `SELECT e.memory_id AS memory_id, e.vec AS vec
      FROM memory_embeddings e
      JOIN memories m ON m.id = e.memory_id
-     WHERE e.model = ? AND m.status = 'active'`,
+     WHERE e.model = ? AND m.status = 'active' AND m.deleted_at IS NULL`,
     [EMBED_MODEL],
   );
   const hits: MemVecHit[] = [];
@@ -267,7 +267,7 @@ export async function recallMemories(query: string, limit = 6): Promise<MemoryRe
           `SELECT m.id AS id
            FROM memories_fts
            JOIN memories m ON m.rowid = memories_fts.rowid
-           WHERE memories_fts MATCH ? AND m.status = 'active'
+           WHERE memories_fts MATCH ? AND m.status = 'active' AND m.deleted_at IS NULL
            ORDER BY bm25(memories_fts)
            LIMIT ?`,
           [ftsQuery, FTS_K],
@@ -298,7 +298,7 @@ export async function recallMemories(query: string, limit = 6): Promise<MemoryRe
 
   // Always fold in pinned memories so the user's curated context is never lost.
   const pinned = dbAll<{ id: string }>(
-    "SELECT id FROM memories WHERE status = 'active' AND pinned = 1 LIMIT 25",
+    "SELECT id FROM memories WHERE status = 'active' AND deleted_at IS NULL AND pinned = 1 LIMIT 25",
   );
   pinned.forEach((r) => {
     const e = byId.get(r.id);
@@ -400,7 +400,7 @@ function rowToItem(r: Record<string, unknown>): MemoryItem {
 
 export function listMemories(opts: { kind?: MemoryKind | "all"; query?: string; limit?: number; sort?: "default" | "recent" } = {}): MemoryItem[] {
   const limit = Math.min(opts.limit ?? 500, 1000);
-  const where: string[] = ["status = 'active'"];
+  const where: string[] = ["status = 'active'", "deleted_at IS NULL"];
   const params: (string | number)[] = [];
   if (opts.kind && opts.kind !== "all") { where.push("kind = ?"); params.push(opts.kind); }
   if (opts.query && opts.query.trim()) {
@@ -459,15 +459,36 @@ export function setMemoryPinned(id: string, pinned: boolean): void {
   markDirty();
 }
 
+// Soft-delete: leave a tombstone (deleted_at set) so sync can propagate the
+// deletion to other devices, instead of hard-deleting the row. norm_text is
+// mutated to free the UNIQUE(norm_text) slot for future re-extraction.
 export function deleteMemory(id: string): void {
-  dbRun("DELETE FROM memories WHERE id = ?", [id]);
+  const row = dbGet<{ rowid: number; text: string; kind: string }>(
+    "SELECT rowid, text, kind FROM memories WHERE id = ? AND deleted_at IS NULL",
+    [id],
+  );
+  if (!row) return;
+  const now = new Date().toISOString();
+  dbRun("DELETE FROM memory_embeddings WHERE memory_id = ?", [id]);
+  dbRun(
+    `UPDATE memories SET deleted_at = ?, updated_at = ?,
+       norm_text = norm_text || ' #deleted:' || id
+     WHERE id = ?`,
+    [now, now, id],
+  );
+  // The memories_au trigger already re-added this rowid to FTS with the
+  // unchanged text/kind; explicitly drop it now that the row is a tombstone.
+  dbRun(
+    "INSERT INTO memories_fts(memories_fts, rowid, text, kind) VALUES ('delete', ?, ?, ?)",
+    [row.rowid, row.text, row.kind],
+  );
   markDirty();
 }
 
 export function memoryStats(): MemoryStats {
-  const total = (dbGet<{ n: number }>("SELECT COUNT(*) AS n FROM memories WHERE status = 'active'") ?? { n: 0 }).n;
+  const total = (dbGet<{ n: number }>("SELECT COUNT(*) AS n FROM memories WHERE status = 'active' AND deleted_at IS NULL") ?? { n: 0 }).n;
   const kinds = dbAll<{ kind: MemoryKind; n: number }>(
-    "SELECT kind, COUNT(*) AS n FROM memories WHERE status = 'active' GROUP BY kind",
+    "SELECT kind, COUNT(*) AS n FROM memories WHERE status = 'active' AND deleted_at IS NULL GROUP BY kind",
   );
   const byKind: Record<MemoryKind, number> = {
     identity: 0, preference: 0, project: 0, decision: 0, fact: 0,
@@ -476,7 +497,7 @@ export function memoryStats(): MemoryStats {
   const pendingEmb = (dbGet<{ n: number }>(
     `SELECT COUNT(*) AS n FROM memories m
      LEFT JOIN memory_embeddings e ON e.memory_id = m.id
-     WHERE e.memory_id IS NULL AND m.status = 'active'`,
+     WHERE e.memory_id IS NULL AND m.status = 'active' AND m.deleted_at IS NULL`,
   ) ?? { n: 0 }).n;
   return {
     total,
