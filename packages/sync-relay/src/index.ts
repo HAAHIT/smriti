@@ -10,6 +10,7 @@
 //   PUT    -> 200 (stores the body, max 2 MB)
 //   DELETE -> 200 (forget this sync group's blob)
 
+/** Worker bindings: the KV namespace that holds the encrypted blobs. */
 export interface Env {
   SYNC_KV: KVNamespace;
 }
@@ -24,6 +25,7 @@ const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Max-Age": "86400",
 };
 
+/** Build a JSON response carrying the shared CORS headers. */
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -32,6 +34,7 @@ function json(status: number, body: unknown): Response {
 }
 
 export default {
+  /** Route a request to GET/PUT/DELETE on /v1/blob/:syncId (else 404/405). */
   async fetch(request: Request, env: Env): Promise<Response> {
     // CORS preflight. Origin is wildcard because the payload is ciphertext
     // the relay can't read, there are no cookies/credentials, and the syncId

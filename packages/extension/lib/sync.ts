@@ -34,26 +34,31 @@ const SECRET_KEY = "smriti_sync_secret";
 
 // ─── chrome.storage.local secret ───────────────────────────────────────────
 
+/** The one secret, persisted only in chrome.storage.local (never in SQLite). */
 interface SyncSecret {
   recoveryCode: string;
 }
 
+/** Read the recovery code from chrome.storage.local, or null if unset. */
 async function loadSecret(): Promise<SyncSecret | null> {
   const obj = await chrome.storage.local.get(SECRET_KEY);
   const v = obj[SECRET_KEY] as SyncSecret | undefined;
   return v && typeof v.recoveryCode === "string" ? v : null;
 }
 
+/** Persist the recovery code to chrome.storage.local. */
 async function saveSecret(recoveryCode: string): Promise<void> {
   await chrome.storage.local.set({ [SECRET_KEY]: { recoveryCode } satisfies SyncSecret });
 }
 
+/** Remove the recovery code from chrome.storage.local (on disable). */
 async function clearSecret(): Promise<void> {
   await chrome.storage.local.remove(SECRET_KEY);
 }
 
 // ─── sync_config row ────────────────────────────────────────────────────────
 
+/** The singleton sync_config row — non-secret metadata only. */
 interface SyncConfigRow {
   enabled: number;
   sync_id: string | null;
@@ -61,6 +66,7 @@ interface SyncConfigRow {
   last_synced_at: string | null;
 }
 
+/** Read the singleton sync_config row, defaulting to a disabled state. */
 function getSyncConfigRow(): SyncConfigRow {
   return (
     dbGet<SyncConfigRow>(
@@ -69,6 +75,7 @@ function getSyncConfigRow(): SyncConfigRow {
   );
 }
 
+/** Patch one or more columns of the singleton sync_config row. */
 function setSyncConfig(patch: Partial<SyncConfigRow>): void {
   const cols = Object.keys(patch) as Array<keyof SyncConfigRow>;
   if (cols.length === 0) return;
@@ -79,6 +86,7 @@ function setSyncConfig(patch: Partial<SyncConfigRow>): void {
 
 // ─── Public API ─────────────────────────────────────────────────────────────
 
+/** Non-secret sync state surfaced to the Settings UI. */
 export interface SyncStatus {
   enabled: boolean;
   syncId: string | null;
@@ -86,6 +94,7 @@ export interface SyncStatus {
   lastSyncedAt: string | null;
 }
 
+/** Current sync configuration for this device (no secrets). */
 export function getSyncStatus(): SyncStatus {
   const cfg = getSyncConfigRow();
   return {
@@ -96,9 +105,11 @@ export function getSyncStatus(): SyncStatus {
   };
 }
 
-// Start a brand-new sync group: generate a recovery code, derive its keys,
-// and persist it as this device's secret. The caller must show the returned
-// recoveryCode to the user — it's the only way to join from another device.
+/**
+ * Start a brand-new sync group: generate a recovery code, derive its keys,
+ * and persist it as this device's secret. The caller must show the returned
+ * recoveryCode to the user — it's the only way to join from another device.
+ */
 export async function setupSync(): Promise<{ recoveryCode: string; syncId: string }> {
   const recoveryCode = generateRecoveryCode();
   const { syncId } = await deriveSyncKeys(recoveryCode);
@@ -107,7 +118,7 @@ export async function setupSync(): Promise<{ recoveryCode: string; syncId: strin
   return { recoveryCode, syncId };
 }
 
-// Join an existing sync group using a recovery code from another device.
+/** Join an existing sync group using a recovery code from another device. */
 export async function joinSync(recoveryCode: string): Promise<{ syncId: string }> {
   const { syncId } = await deriveSyncKeys(recoveryCode);
   await saveSecret(recoveryCode);
@@ -115,13 +126,16 @@ export async function joinSync(recoveryCode: string): Promise<{ syncId: string }
   return { syncId };
 }
 
-// Stop syncing on this device. Local-only: does not touch the relay, so
-// other devices in the sync group are unaffected.
+/**
+ * Stop syncing on this device. Local-only: does not touch the relay, so other
+ * devices in the sync group are unaffected.
+ */
 export async function disableSync(): Promise<void> {
   await clearSecret();
   setSyncConfig({ enabled: 0, sync_id: null, device_id: null, last_synced_at: null });
 }
 
+/** Per-row tallies returned from a sync round. */
 export interface SyncResult {
   pulled: number;
   pushed: number;
@@ -132,6 +146,11 @@ export interface SyncResult {
   lastSyncedAt: string;
 }
 
+/**
+ * Run one full sync round: pull the encrypted remote blob, merge each remote
+ * row into local state, then push the full post-merge state back to the relay.
+ * Throws if sync isn't enabled or the relay URL is still the placeholder.
+ */
 export async function syncNow(): Promise<SyncResult> {
   const cfg = getSyncConfigRow();
   if (!cfg.enabled || !cfg.sync_id) throw new Error("sync is not enabled");
@@ -174,13 +193,14 @@ export async function syncNow(): Promise<SyncResult> {
 // carry only id/updated_at/deleted_at — nothing else about a deleted memory
 // matters to a peer.
 
+/** A deleted memory: only identity + when, enough to propagate the deletion. */
 interface ChangesetTombstone {
   id: string;
   updated_at: string;
   deleted_at: string;
 }
 
-// Present in full only when deleted_at is null.
+/** A live memory in full. Present in this shape only when deleted_at is null. */
 interface ChangesetMemoryData {
   id: string;
   updated_at: string;
@@ -198,8 +218,10 @@ interface ChangesetMemoryData {
   embedding?: string; // base64-encoded Float32Array
 }
 
+/** One row in the synced snapshot: either a live memory or a tombstone. */
 type ChangesetMemory = ChangesetTombstone | ChangesetMemoryData;
 
+/** A raw memories-table row as read back from sql.js. */
 interface MemoryRow {
   id: string;
   kind: MemoryKind;
@@ -216,6 +238,11 @@ interface MemoryRow {
   salience: number;
 }
 
+/**
+ * Snapshot the entire memories table (live rows + tombstones) as a changeset,
+ * folding each live row's embedding in as base64 so a joining device need not
+ * recompute it.
+ */
 function exportAllMemories(): ChangesetMemory[] {
   const rows = dbAll<MemoryRow>(
     `SELECT id, kind, text, norm_text, source, source_platform, created_at,
@@ -254,6 +281,11 @@ function exportAllMemories(): ChangesetMemory[] {
 
 // ─── Merge ──────────────────────────────────────────────────────────────────
 
+/**
+ * Merge one remote changeset row into local state, applying the side effect
+ * (insert/update/soft-delete) that `decideMerge` selects. Returns the outcome
+ * so the caller can tally it.
+ */
 function mergeRemoteMemory(remote: ChangesetMemory): MergeOutcome {
   const local =
     dbGet<{ id: string; norm_text: string; updated_at: string; deleted_at: string | null }>(
@@ -280,6 +312,7 @@ function mergeRemoteMemory(remote: ChangesetMemory): MergeOutcome {
   return outcome;
 }
 
+/** True if a different active local memory already holds this norm_text. */
 function normTextCollides(normText: string, exceptId: string): boolean {
   return !!dbGet<{ id: string }>(
     "SELECT id FROM memories WHERE norm_text = ? AND deleted_at IS NULL AND id != ?",
@@ -287,6 +320,7 @@ function normTextCollides(normText: string, exceptId: string): boolean {
   );
 }
 
+/** Insert a remote memory as a new local row (source_* FKs forced NULL). */
 function insertRemoteMemory(remote: ChangesetMemoryData): void {
   dbRun(
     `INSERT INTO memories
@@ -305,9 +339,11 @@ function insertRemoteMemory(remote: ChangesetMemoryData): void {
   markDirty();
 }
 
-// use_count / last_used_at / created_at / source_conversation_id /
-// source_message_id are device-local and never overwritten by a remote
-// update.
+/**
+ * Overwrite an existing local memory with a newer remote version. use_count /
+ * last_used_at / created_at / source_conversation_id / source_message_id are
+ * device-local and never overwritten by a remote update.
+ */
 function updateFromRemote(remote: ChangesetMemoryData, oldNormText: string): void {
   dbRun(
     `UPDATE memories SET kind = ?, text = ?, norm_text = ?, source = ?,
@@ -331,6 +367,7 @@ function updateFromRemote(remote: ChangesetMemoryData, oldNormText: string): voi
 
 // ─── Relay client ───────────────────────────────────────────────────────────
 
+/** Fetch the encrypted blob for a syncId; null on 404 (nothing stored yet). */
 async function relayGet(syncId: string): Promise<Uint8Array | null> {
   const res = await fetch(`${DEFAULT_RELAY_URL}/v1/blob/${syncId}`);
   if (res.status === 404) return null;
@@ -338,6 +375,7 @@ async function relayGet(syncId: string): Promise<Uint8Array | null> {
   return new Uint8Array(await res.arrayBuffer());
 }
 
+/** Store the encrypted blob for a syncId (full-state overwrite). */
 async function relayPut(syncId: string, blob: Uint8Array<ArrayBuffer>): Promise<void> {
   const res = await fetch(`${DEFAULT_RELAY_URL}/v1/blob/${syncId}`, {
     method: "PUT",
@@ -349,12 +387,14 @@ async function relayPut(syncId: string, blob: Uint8Array<ArrayBuffer>): Promise<
 
 // ─── base64 <-> bytes ───────────────────────────────────────────────────────
 
+/** Encode raw bytes (an embedding's BLOB) as base64 for JSON transport. */
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = "";
   for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]!);
   return btoa(binary);
 }
 
+/** Decode a base64 string back into a Float32Array embedding. */
 function base64ToFloat32(b64: string): Float32Array {
   const binary = atob(b64);
   const bytes = new Uint8Array(binary.length);

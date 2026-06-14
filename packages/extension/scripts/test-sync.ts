@@ -21,11 +21,13 @@ import { decideMerge, type MergeLocal, type MergeRemote, type MergeOutcome } fro
 let pass = 0;
 let fail = 0;
 
+/** Record and print one pass/fail assertion. */
 function check(name: string, cond: boolean): void {
   console.log(`${cond ? "✓" : "✗"} ${name}`);
   cond ? pass++ : fail++;
 }
 
+/** Assert that an async fn rejects — passes iff it throws. */
 async function checkThrows(name: string, fn: () => Promise<unknown>): Promise<void> {
   try {
     await fn();
@@ -42,12 +44,15 @@ const OLD = "2026-02-01T00:00:00.000Z";
 const yes = () => true; // norm_text collides with a different active row
 const no = () => false; // no collision
 
+/** Build a live remote changeset row for a merge-decision case. */
 function remoteActive(updated_at: string, norm_text: string): MergeRemote {
   return { id: "r", updated_at, deleted_at: null, norm_text };
 }
+/** Build a remote tombstone row for a merge-decision case. */
 function remoteTomb(updated_at: string): MergeRemote {
   return { id: "r", updated_at, deleted_at: updated_at };
 }
+/** Build the local-row state for a merge-decision case. */
 function local(updated_at: string, deleted_at: string | null, norm_text = "x"): MergeLocal {
   return { updated_at, deleted_at, norm_text };
 }
@@ -77,6 +82,7 @@ cases.forEach(([name, got], i) => check(`${name} (got ${got})`, got === expected
 
 // ─── Crypto ───────────────────────────────────────────────────────────────────
 
+/** Exercise the sync-crypto round-trip, key derivation, and failure modes. */
 async function cryptoTests(): Promise<void> {
   console.log("\n=== Crypto ===\n");
 

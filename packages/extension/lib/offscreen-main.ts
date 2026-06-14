@@ -53,6 +53,7 @@ import type { CaptureEvent, Platform, MemoryKind, MemorySource, NMResponse } fro
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 
+/** Initialize the DB, start the index worker, and signal readiness. */
 async function boot(): Promise<void> {
   console.log("[smriti:offscreen] booting");
   try {
@@ -92,6 +93,7 @@ chrome.runtime.onMessage.addListener(
 
 // ─── Handler dispatch ─────────────────────────────────────────────────────────
 
+/** Dispatch one offscreen RPC, selected by m.type, to its subsystem. */
 async function handleMessage(
   m: { type: string; id?: string; [k: string]: unknown },
 ): Promise<unknown> {

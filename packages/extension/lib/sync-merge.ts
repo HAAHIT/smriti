@@ -6,14 +6,17 @@
 // sync.ts owns the side effects (the actual INSERT/UPDATE/delete); this owns
 // only the decision of which one to take.
 
+/** The action a merge resolves to for a single remote row. */
 export type MergeOutcome = "inserted" | "updated" | "deleted" | "skipped";
 
+/** The local row's fields the decision needs (or null if no local row). */
 export interface MergeLocal {
   norm_text: string;
   updated_at: string;
   deleted_at: string | null;
 }
 
+/** The incoming remote row's fields the decision needs. */
 export interface MergeRemote {
   id: string;
   updated_at: string;
@@ -21,14 +24,15 @@ export interface MergeRemote {
   norm_text?: string; // present iff deleted_at === null
 }
 
-// Decide how to merge one remote memory row into local state. Last-write-wins
-// by updated_at, with "delete wins" on conflict (a local tombstone is never
-// resurrected) and norm_text-collision skips that self-resolve on a later
-// sync.
-//
-// `collides(normText, exceptId)` reports whether some *active* local memory
-// other than exceptId already holds normText — i.e. whether applying this
-// remote row would violate the UNIQUE(norm_text) guard.
+/**
+ * Decide how to merge one remote memory row into local state. Last-write-wins
+ * by updated_at, with "delete wins" on conflict (a local tombstone is never
+ * resurrected) and norm_text-collision skips that self-resolve on a later sync.
+ *
+ * `collides(normText, exceptId)` reports whether some *active* local memory
+ * other than exceptId already holds normText — i.e. whether applying this
+ * remote row would violate the UNIQUE(norm_text) guard.
+ */
 export function decideMerge(
   remote: MergeRemote,
   local: MergeLocal | null,

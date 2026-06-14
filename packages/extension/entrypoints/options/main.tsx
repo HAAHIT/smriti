@@ -2365,8 +2365,11 @@ function SettingsView({ totals, embed, nav }: {
 }
 
 // ─── SyncSection ─────────────────────────────────────────────────────────────
-// Optional end-to-end-encrypted memory sync. The recovery code is the only
-// secret and never leaves the device unencrypted; the relay sees opaque blobs.
+/**
+ * Settings panel for optional end-to-end-encrypted memory sync. The recovery
+ * code is the only secret and never leaves the device unencrypted; the relay
+ * sees opaque blobs. Wires the sync_* offscreen RPCs to setup/join/sync/disable.
+ */
 function SyncSection() {
   const [status, setStatus] = useState<{ enabled: boolean; syncId: string | null; lastSyncedAt: string | null } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -2376,6 +2379,7 @@ function SyncSection() {
   const [joinCode, setJoinCode] = useState("");
   const [copied, setCopied] = useState(false);
 
+  /** Reload current sync status from the offscreen engine into state. */
   const refresh = () =>
     sendToHelper({ type: "sync_status" })
       .then((r) => setStatus({
@@ -2387,12 +2391,15 @@ function SyncSection() {
 
   useEffect(() => { refresh(); }, []);
 
+  /** Extract a display message from a thrown value. */
   const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+  /** One-line summary of a sync result's insert/update/delete tallies. */
   const summary = (r: AnyResp) => {
     const ins = (r.inserted as number) ?? 0, upd = (r.updated as number) ?? 0, del = (r.deleted as number) ?? 0;
     return ins + upd + del === 0 ? "Already up to date." : `Synced — ${ins} added, ${upd} updated, ${del} removed.`;
   };
 
+  /** Create a new sync group and reveal the generated recovery code. */
   const onSetup = async () => {
     setBusy(true); setMsg(null);
     try {
@@ -2403,6 +2410,7 @@ function SyncSection() {
     } catch (e) { setMsg(errText(e)); } finally { setBusy(false); }
   };
 
+  /** Join an existing sync group with a pasted recovery code, then sync. */
   const onJoin = async () => {
     setBusy(true); setMsg(null);
     try {
@@ -2420,6 +2428,7 @@ function SyncSection() {
     } catch (e) { setMsg(errText(e)); } finally { setBusy(false); }
   };
 
+  /** Run a sync round now and show the result. */
   const onSyncNow = async () => {
     setBusy(true); setMsg(null);
     try {
@@ -2429,6 +2438,7 @@ function SyncSection() {
     } catch (e) { setMsg(errText(e)); } finally { setBusy(false); }
   };
 
+  /** Turn sync off on this device (local-only; the relay is untouched). */
   const onDisable = async () => {
     setBusy(true); setMsg(null);
     try {
@@ -2438,6 +2448,7 @@ function SyncSection() {
     } catch (e) { setMsg(errText(e)); } finally { setBusy(false); }
   };
 
+  /** Copy the freshly generated recovery code to the clipboard. */
   const copyCode = () => {
     if (!newCode) return;
     navigator.clipboard.writeText(newCode)
@@ -2445,6 +2456,7 @@ function SyncSection() {
       .catch(() => {});
   };
 
+  /** Shared button style; primary renders an accent fill. */
   const btn = (primary?: boolean): React.CSSProperties => ({
     background: primary ? "var(--accent)" : "var(--surface)",
     border: primary ? "none" : "1px solid var(--hairline-strong)",

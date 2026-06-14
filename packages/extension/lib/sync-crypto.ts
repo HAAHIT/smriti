@@ -28,6 +28,7 @@ export function normalizeRecoveryCode(input: string): string {
   return hex;
 }
 
+/** Format 32 hex chars as 8 dash-separated groups of 4 for readability. */
 function groupHex(hex: string): string {
   const groups: string[] = [];
   for (let i = 0; i < hex.length; i += 4) groups.push(hex.slice(i, i + 4));
@@ -36,15 +37,18 @@ function groupHex(hex: string): string {
 
 // ─── Key derivation ─────────────────────────────────────────────────────────
 
+/** The pair derived from a recovery code: the AES key and the relay sync ID. */
 export interface SyncKeys {
   encKey: CryptoKey;
   syncId: string;
 }
 
-// Derive the AES-GCM encryption key and the relay sync ID from a recovery
-// code. The same code always derives the same pair, so two devices that
-// share a recovery code read/write the same relay blob — without the relay
-// ever seeing the code or the key.
+/**
+ * Derive the AES-GCM encryption key and the relay sync ID from a recovery
+ * code. The same code always derives the same pair, so two devices that share
+ * a recovery code read/write the same relay blob — without the relay ever
+ * seeing the code or the key.
+ */
 export async function deriveSyncKeys(recoveryCode: string): Promise<SyncKeys> {
   const ikm = hexToBytes(normalizeRecoveryCode(recoveryCode));
   const baseKey = await crypto.subtle.importKey("raw", ikm, "HKDF", false, [
@@ -72,8 +76,10 @@ export async function deriveSyncKeys(recoveryCode: string): Promise<SyncKeys> {
 
 // ─── Encryption ─────────────────────────────────────────────────────────────
 
-// Encrypt a JSON-serializable value. Output is `iv (12 bytes) || ciphertext`
-// (ciphertext includes the AES-GCM auth tag).
+/**
+ * Encrypt a JSON-serializable value. Output is `iv (12 bytes) || ciphertext`,
+ * where the ciphertext includes the AES-GCM auth tag.
+ */
 export async function encryptJson(key: CryptoKey, data: unknown): Promise<Uint8Array<ArrayBuffer>> {
   const plaintext = new TextEncoder().encode(JSON.stringify(data));
   const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -84,7 +90,7 @@ export async function encryptJson(key: CryptoKey, data: unknown): Promise<Uint8A
   return out;
 }
 
-// Decrypt a blob produced by encryptJson() and parse it as JSON.
+/** Decrypt a blob produced by encryptJson() and parse it as JSON. */
 export async function decryptJson<T>(key: CryptoKey, blob: Uint8Array): Promise<T> {
   const iv = blob.slice(0, 12);
   const ciphertext = blob.slice(12);
@@ -94,10 +100,12 @@ export async function decryptJson<T>(key: CryptoKey, blob: Uint8Array): Promise<
 
 // ─── hex helpers ────────────────────────────────────────────────────────────
 
+/** Lowercase-hex-encode a byte array. */
 function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+/** Decode a hex string into bytes (inverse of bytesToHex). */
 function hexToBytes(hex: string): Uint8Array<ArrayBuffer> {
   const bytes = new Uint8Array(hex.length / 2);
   for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
