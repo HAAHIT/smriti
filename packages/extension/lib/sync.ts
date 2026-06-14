@@ -135,25 +135,37 @@ export interface SyncResult {
 export async function syncNow(): Promise<SyncResult> {
   const cfg = getSyncConfigRow();
   if (!cfg.enabled || !cfg.sync_id) throw new Error("sync is not enabled");
+  if (DEFAULT_RELAY_URL.includes("YOUR-SUBDOMAIN")) {
+    throw new Error(
+      "Sync relay isn't configured yet — deploy packages/sync-relay and replace the " +
+        "placeholder URL (see packages/sync-relay/README.md).",
+    );
+  }
   const secret = await loadSecret();
   if (!secret) throw new Error("sync recovery code is missing");
   const { encKey } = await deriveSyncKeys(secret.recoveryCode);
 
   const tally = { inserted: 0, updated: 0, deleted: 0, skipped: 0 };
-  let pulled = 0;
+  let remoteRows: ChangesetMemory[] = [];
   const remoteBlob = await relayGet(cfg.sync_id);
   if (remoteBlob && remoteBlob.length > 0) {
-    const remoteRows = await decryptJson<ChangesetMemory[]>(encKey, remoteBlob);
-    pulled = remoteRows.length;
+    remoteRows = await decryptJson<ChangesetMemory[]>(encKey, remoteBlob);
     for (const row of remoteRows) tally[mergeRemoteMemory(row)]++;
   }
 
+  // Carry forward any remote rows the merge intentionally skipped and that we
+  // don't hold locally — remote tombstones for ids we never had, and rows
+  // skipped on a norm_text collision. Without this, the full-state PUT below
+  // would erase them from the relay before other devices ever consumed them.
   const localRows = exportAllMemories();
-  await relayPut(cfg.sync_id, await encryptJson(encKey, localRows));
+  const localIds = new Set(localRows.map((r) => r.id));
+  const carried = remoteRows.filter((r) => !localIds.has(r.id));
+  const outbound = carried.length ? [...localRows, ...carried] : localRows;
+  await relayPut(cfg.sync_id, await encryptJson(encKey, outbound));
 
   const lastSyncedAt = new Date().toISOString();
   setSyncConfig({ last_synced_at: lastSyncedAt });
-  return { pulled, pushed: localRows.length, lastSyncedAt, ...tally };
+  return { pulled: remoteRows.length, pushed: outbound.length, lastSyncedAt, ...tally };
 }
 
 // ─── Changeset ──────────────────────────────────────────────────────────────

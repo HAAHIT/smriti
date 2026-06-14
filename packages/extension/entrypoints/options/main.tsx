@@ -2356,7 +2356,9 @@ function SettingsView({ totals, embed, nav }: {
       <p style={{ marginTop: 36, fontSize: 11, color: "var(--muted)", lineHeight: 1.6 }}>
         Smriti stores everything in <code style={{ background: "var(--chip-bg)", padding: "1px 4px", borderRadius: 2 }}>%APPDATA%\Smriti\smriti.db</code>{" "}
         (Windows) or <code style={{ background: "var(--chip-bg)", padding: "1px 4px", borderRadius: 2 }}>~/Library/Application Support/Smriti/smriti.db</code> (macOS).
-        Nothing is sent over the network except the requests Claude.ai / ChatGPT / Gemini already make from your browser.
+        Nothing is sent over the network except the requests Claude.ai / ChatGPT / Gemini already
+        make from your browser — unless you turn on Sync, which uploads only end-to-end-encrypted
+        memory blobs that the relay cannot read.
       </p>
     </div>
   );
@@ -2406,8 +2408,14 @@ function SyncSection() {
     try {
       await sendToHelper({ type: "sync_join", recovery_code: joinCode });
       setJoinCode(""); setShowJoin(false);
-      const r = await sendToHelper({ type: "sync_now" });
-      setMsg(summary(r));
+      // Join already succeeded — don't let a failed initial sync (e.g. the
+      // relay isn't deployed yet) flip the UI back to a failed/disabled state.
+      try {
+        const r = await sendToHelper({ type: "sync_now" });
+        setMsg(summary(r));
+      } catch (e) {
+        setMsg(`Joined. Initial sync failed: ${errText(e)}`);
+      }
       await refresh();
     } catch (e) { setMsg(errText(e)); } finally { setBusy(false); }
   };
@@ -2502,6 +2510,7 @@ function SyncSection() {
       {showJoin && !status?.enabled && (
         <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
           <input
+            aria-label="Recovery code"
             value={joinCode}
             onChange={(e) => setJoinCode(e.target.value)}
             placeholder="xxxx-xxxx-xxxx-xxxx-…"

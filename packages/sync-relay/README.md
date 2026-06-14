@@ -74,3 +74,29 @@ npm run dev   # wrangler dev, serves on http://localhost:8787
 
 `wrangler dev` uses a local KV simulation by default, so you can exercise
 `GET`/`PUT`/`DELETE` without touching production data.
+
+## Security model & known limitations
+
+The `syncId` is a 128-bit value HKDF-derived from the recovery code. It is
+both the lookup key **and** the bearer credential: knowing it grants read/write
+to that one blob, and it can't be guessed or reversed into the recovery code or
+the AES key. That's the whole auth model — deliberately so, to stay
+zero-knowledge.
+
+Two consequences are worth calling out for v1:
+
+- **Writes are unauthenticated beyond knowing the `syncId`.** A client could
+  `PUT` random 32-hex ids to churn KV. We can't add per-user server-side auth
+  without a secret the relay would have to know (breaking zero-knowledge), so
+  abuse is handled operationally: the 2 MB body cap (in-Worker), a Cloudflare
+  **Rate Limiting** rule on the route (see above), and KV's account write
+  quotas. A future option is a global write token (a shared secret gating all
+  writes) if public abuse becomes a problem.
+- **No compare-and-swap, so concurrent writers can clobber.** Each sync does a
+  full pull → merge → push. If two devices sync at the same instant, both push
+  full state and the later `PUT` wins, dropping the other's just-merged changes
+  until the next sync reconciles them. Cloudflare **KV has no atomic CAS**, so
+  true conditional writes would require migrating the relay to a **Durable
+  Object** (which can serialize writes and hold a revision token). That's the
+  intended path if multi-device concurrency becomes common; v1 accepts the
+  small race because sync is user-initiated and the data volume is tiny.

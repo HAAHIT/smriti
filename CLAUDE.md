@@ -17,9 +17,11 @@ feature, memory is the product.) Goal: fundable startup / YC.
 - **Hero feature (built):** the memory injection loop — recall relevant memory as
   you type and inject it into the composer.
 
-## Architecture (single browser extension, no server)
-WXT + React. Everything runs in-browser; nothing leaves the device (after the
-one-time ~25 MB embedding-model download).
+## Architecture (local-first browser extension + optional relay)
+WXT + React. Core memory features run entirely in-browser; nothing leaves the
+device (after the one-time ~25 MB embedding-model download) unless the user opts
+into sync, which uploads only end-to-end-encrypted memory blobs to the
+zero-knowledge relay (opaque ciphertext the relay can't read).
 
 ```
 packages/

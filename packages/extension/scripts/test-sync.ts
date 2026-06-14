@@ -72,6 +72,7 @@ const expected: MergeOutcome[] = [
 ];
 
 console.log("\n=== Merge decision table ===\n");
+check("merge table length matches expected", cases.length === expected.length);
 cases.forEach(([name, got], i) => check(`${name} (got ${got})`, got === expected[i]));
 
 // ─── Crypto ───────────────────────────────────────────────────────────────────

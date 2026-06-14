@@ -321,7 +321,9 @@ export async function recallMemories(query: string, limit = 6): Promise<MemoryRe
   }>(
     `SELECT id, kind, text, source_platform, source_conversation_id,
             source_message_id, created_at, pinned, salience, use_count, last_used_at
-     FROM memories WHERE id IN (${ids.map(() => "?").join(",")})`,
+     FROM memories
+     WHERE id IN (${ids.map(() => "?").join(",")})
+       AND status = 'active' AND deleted_at IS NULL`,
     ids,
   );
   const metaById = new Map(meta.map((m) => [m.id, m]));
@@ -469,19 +471,29 @@ export function deleteMemory(id: string): void {
   );
   if (!row) return;
   const now = new Date().toISOString();
-  dbRun("DELETE FROM memory_embeddings WHERE memory_id = ?", [id]);
-  dbRun(
-    `UPDATE memories SET deleted_at = ?, updated_at = ?,
-       norm_text = norm_text || ' #deleted:' || id
-     WHERE id = ?`,
-    [now, now, id],
-  );
-  // The memories_au trigger already re-added this rowid to FTS with the
-  // unchanged text/kind; explicitly drop it now that the row is a tombstone.
-  dbRun(
-    "INSERT INTO memories_fts(memories_fts, rowid, text, kind) VALUES ('delete', ?, ?, ?)",
-    [row.rowid, row.text, row.kind],
-  );
+  // The three writes (drop embeddings, set the tombstone, drop it from FTS)
+  // must land together — a partial failure could leave a tombstone still
+  // discoverable in FTS. sql.js is synchronous, so BEGIN/COMMIT wraps them.
+  dbRun("BEGIN");
+  try {
+    dbRun("DELETE FROM memory_embeddings WHERE memory_id = ?", [id]);
+    dbRun(
+      `UPDATE memories SET deleted_at = ?, updated_at = ?,
+         norm_text = norm_text || ' #deleted:' || id
+       WHERE id = ?`,
+      [now, now, id],
+    );
+    // The memories_au trigger already re-added this rowid to FTS with the
+    // unchanged text/kind; explicitly drop it now that the row is a tombstone.
+    dbRun(
+      "INSERT INTO memories_fts(memories_fts, rowid, text, kind) VALUES ('delete', ?, ?, ?)",
+      [row.rowid, row.text, row.kind],
+    );
+    dbRun("COMMIT");
+  } catch (e) {
+    dbRun("ROLLBACK");
+    throw e;
+  }
   markDirty();
 }
 
