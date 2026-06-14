@@ -1,6 +1,7 @@
 # Smriti — project guide
 
 ## What this is
+
 **Smriti is a local-first memory layer for AI.** It captures your conversations
 across Claude, ChatGPT, and Gemini, distills durable facts about you, and lets
 you inject that context into any AI prompt in one click — so every tool
@@ -10,6 +11,7 @@ Positioning: **"Your AI remembers you."** (Not "search your old chats" — that'
 feature, memory is the product.) Goal: fundable startup / YC.
 
 ### Strategic decisions (locked)
+
 - **Direction:** memory layer, not just search/archive.
 - **Data model:** local-first by default + optional end-to-end-encrypted sync
   (built — memories only, zero-knowledge relay). The privacy wedge is the moat;
@@ -18,6 +20,7 @@ feature, memory is the product.) Goal: fundable startup / YC.
   you type and inject it into the composer.
 
 ## Architecture (local-first browser extension + optional relay)
+
 WXT + React. Core memory features run entirely in-browser; nothing leaves the
 device (after the one-time ~25 MB embedding-model download) unless the user opts
 into sync, which uploads only end-to-end-encrypted memory blobs to the
@@ -48,6 +51,7 @@ Extension internals:
 - `entrypoints/options/main.tsx` — the desktop archive viewer + Memory view.
 
 ## The memory layer (this is the differentiator)
+
 - `lib/extract.ts` — **pure** heuristic extractor (no DB/model). Pulls durable
   first-person facts from user messages, classified as
   identity/preference/project/decision/fact. Unit-tested: `npm run test:extract`.
@@ -68,6 +72,7 @@ The loop: sidebar watches the host composer as you type → `recall_memories` RP
 "Build my memory" (`build_memory_now`) populates instantly from history for demos.
 
 ### Architecture rules
+
 - Anything imported by a **content script** must be DOM-only / dependency-light
   (`extract.ts`, `inject.ts` are safe; never import `memory.ts`/`db.ts` there —
   they pull sql.js/transformers, which belong to the offscreen doc only).
@@ -75,6 +80,7 @@ The loop: sidebar watches the host composer as you type → `recall_memories` RP
   `sendToHelper({ type, ... })` (loose `AnyResp`, read fields off the result).
 
 ## Build / test / run
+
 ```
 npm install
 cd packages/extension
@@ -87,6 +93,7 @@ npm run dev              # live dev
 ```
 
 ## Known gaps / next steps
+
 **`RELEASE_PLAN.md` is the executable pre-release PRD (tasks T1–T11 with
 anchors, snippets, and acceptance criteria) — work from it, in order.**
 - Onboarding copy still search-centric; reframe to memory.
@@ -101,6 +108,7 @@ anchors, snippets, and acceptance criteria) — work from it, in order.**
 - Not yet shipped to Chrome Web Store (`STORE_LISTING.md` has placeholders).
 
 ## Conventions
+
 - Match existing style: section-comment headers (`// ─── X ───`), serif/sans/mono
   CSS vars, oxblood accent (`--accent`). No new deps unless necessary.
 - Commit messages end with the Co-Authored-By trailer.
