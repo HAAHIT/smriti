@@ -19,6 +19,9 @@ export default defineConfig({
       "https://claude.ai/*",
       "https://chatgpt.com/*",
       "https://gemini.google.com/*",
+      // Sync relay (packages/sync-relay). Replace after `wrangler deploy` —
+      // see packages/sync-relay/README.md.
+      "https://smriti-sync-relay.YOUR-SUBDOMAIN.workers.dev/*",
     ],
     action: {
       default_title: "Smriti",
@@ -36,8 +39,11 @@ export default defineConfig({
       "128": "icons/icon-128.png",
     },
     content_security_policy: {
+      // connect-src allows the offscreen doc to reach the sync relay. Replace
+      // the placeholder host after `wrangler deploy`.
       extension_pages:
-        "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
+        "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; " +
+        "connect-src 'self' https://smriti-sync-relay.YOUR-SUBDOMAIN.workers.dev",
     },
     minimum_chrome_version: "116",
   },

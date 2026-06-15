@@ -215,4 +215,27 @@ CREATE TABLE memory_meta (
 );
 `,
   ],
+  [
+    "004_sync.sql",
+    `
+-- Soft-delete: a deleted memory becomes a tombstone (deleted_at set) instead
+-- of being removed outright, so sync can propagate the deletion to other
+-- devices. norm_text is mutated on delete (see deleteMemory) to free the
+-- UNIQUE(norm_text) slot for re-extraction.
+ALTER TABLE memories ADD COLUMN deleted_at TEXT;
+
+-- Singleton row holding this device's sync configuration. All fields here
+-- are non-secret — the recovery code / derived key live only in
+-- chrome.storage.local, never in this database (so they're never swept into
+-- a JSON export).
+CREATE TABLE sync_config (
+  id             INTEGER PRIMARY KEY CHECK (id = 1),
+  enabled        INTEGER NOT NULL DEFAULT 0,
+  sync_id        TEXT,
+  device_id      TEXT,
+  last_synced_at TEXT
+);
+INSERT INTO sync_config (id, enabled) VALUES (1, 0);
+`,
+  ],
 ];

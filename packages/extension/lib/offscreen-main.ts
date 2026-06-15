@@ -48,10 +48,12 @@ import {
   extractionSweep,
   pendingExtractionCount,
 } from "../lib/memory.js";
+import { getSyncStatus, setupSync, joinSync, syncNow, disableSync } from "../lib/sync.js";
 import type { CaptureEvent, Platform, MemoryKind, MemorySource, NMResponse } from "@smriti/shared";
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 
+/** Initialize the DB, start the index worker, and signal readiness. */
 async function boot(): Promise<void> {
   console.log("[smriti:offscreen] booting");
   try {
@@ -91,6 +93,7 @@ chrome.runtime.onMessage.addListener(
 
 // ─── Handler dispatch ─────────────────────────────────────────────────────────
 
+/** Dispatch one offscreen RPC, selected by m.type, to its subsystem. */
 async function handleMessage(
   m: { type: string; id?: string; [k: string]: unknown },
 ): Promise<unknown> {
@@ -269,6 +272,19 @@ async function handleMessage(
     case "wipe_archive": {
       const cleared = wipeArchive();
       return { cleared };
+    }
+
+    case "sync_status":
+      return getSyncStatus();
+    case "sync_setup":
+      return setupSync();
+    case "sync_join":
+      return joinSync(m.recovery_code as string);
+    case "sync_now":
+      return syncNow();
+    case "sync_disable": {
+      await disableSync();
+      return { ok: true };
     }
 
     case "flush": {
