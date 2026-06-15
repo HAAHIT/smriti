@@ -58,14 +58,27 @@ async function broadcastCaptureToggle(host: string, off: boolean): Promise<void>
 //      when it's safe to send messages.
 
 let offscreenReady = false;
-let readyWaiters: Array<() => void> = [];
+// The last boot error, if the offscreen doc failed to initialize. Set on
+// "offscreen_error" so waiters reject fast instead of hanging forever.
+let offscreenError: string | null = null;
+let readyWaiters: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
 let offscreenCreating: Promise<void> | null = null;
+
+// How long an RPC waits for the offscreen doc to signal ready before giving up.
+const OFFSCREEN_READY_TIMEOUT_MS = 20_000;
 
 async function ensureOffscreen(): Promise<void> {
   if (offscreenCreating) return offscreenCreating;
-  const existing = await chrome.offscreen.hasDocument();
+  let existing = await chrome.offscreen.hasDocument();
+  // A doc that exists but failed to boot is useless — tear it down and recreate
+  // so a retry can recover instead of rejecting against the broken instance.
+  if (existing && offscreenError) {
+    await chrome.offscreen.closeDocument().catch(() => {});
+    existing = false;
+  }
   if (!existing) {
     offscreenReady = false;
+    offscreenError = null;
     offscreenCreating = chrome.offscreen
       .createDocument({
         url: OFFSCREEN_URL,
@@ -79,8 +92,20 @@ async function ensureOffscreen(): Promise<void> {
 
 function waitForOffscreen(): Promise<void> {
   if (offscreenReady) return Promise.resolve();
-  return new Promise((resolve) => {
-    readyWaiters.push(resolve);
+  if (offscreenError) return Promise.reject(new Error(offscreenError));
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const waiter = {
+      resolve: () => { if (settled) return; settled = true; clearTimeout(timer); resolve(); },
+      reject: (e: Error) => { if (settled) return; settled = true; clearTimeout(timer); reject(e); },
+    };
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      readyWaiters = readyWaiters.filter((w) => w !== waiter);
+      reject(new Error("offscreen document did not become ready in time"));
+    }, OFFSCREEN_READY_TIMEOUT_MS);
+    readyWaiters.push(waiter);
   });
 }
 
@@ -147,17 +172,23 @@ export default defineBackground(() => {
 
       if (kind === "offscreen_ready") {
         offscreenReady = true;
+        offscreenError = null;
         console.log("[smriti] offscreen ready");
         setBadgeOk();
         const waiters = readyWaiters.splice(0);
-        waiters.forEach((fn) => fn());
+        waiters.forEach((w) => w.resolve());
         return;
       }
 
       if (kind === "offscreen_error") {
-        const error = (msg as { error?: string }).error;
+        const error = (msg as { error?: string }).error ?? "offscreen failed to start";
         console.error("[smriti] offscreen boot error:", error);
+        offscreenError = error;
+        offscreenReady = false;
         setBadgeError();
+        // Fail any in-flight RPCs immediately instead of leaving them to hang.
+        const waiters = readyWaiters.splice(0);
+        waiters.forEach((w) => w.reject(new Error(error)));
         return;
       }
 
@@ -165,6 +196,12 @@ export default defineBackground(() => {
 
       if (kind === "backfill_progress" || kind === "backfill_done") {
         void browser.storage.local.set({ "smriti:last_progress": msg });
+        broadcastToUi(msg).catch(() => {});
+        return;
+      }
+
+      // ── Build-memory progress (forwarded from offscreen → listeners) ────
+      if (kind === "build_progress") {
         broadcastToUi(msg).catch(() => {});
         return;
       }
