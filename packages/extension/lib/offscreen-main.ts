@@ -53,6 +53,11 @@ import type { CaptureEvent, Platform, MemoryKind, MemorySource, NMResponse } fro
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 
+// True once initDb() has completed. Surfaced via the "ping" RPC so a restarted
+// background service worker can confirm this (surviving) doc is ready without
+// waiting for the one-shot "offscreen_ready" broadcast it already missed.
+let dbReady = false;
+
 /** Initialize the DB, start the index worker, and signal readiness. */
 async function boot(): Promise<void> {
   console.log("[smriti:offscreen] booting");
@@ -60,6 +65,7 @@ async function boot(): Promise<void> {
     await initDb();
     console.log("[smriti:offscreen] db ready");
     startIndexWorker();
+    dbReady = true;
     // Notify background that offscreen is ready.
     chrome.runtime.sendMessage({ kind: "offscreen_ready" }).catch(() => {});
     console.log("[smriti:offscreen] ready");
@@ -99,7 +105,7 @@ async function handleMessage(
 ): Promise<unknown> {
   switch (m.type) {
     case "ping":
-      return { pong: true };
+      return { pong: true, ready: dbReady };
 
     // hello — backward compat with options page version check.
     case "hello":

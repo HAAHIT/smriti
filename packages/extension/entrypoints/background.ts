@@ -87,6 +87,35 @@ async function ensureOffscreen(): Promise<void> {
       })
       .finally(() => { offscreenCreating = null; });
     await offscreenCreating;
+  } else if (!offscreenReady) {
+    // The doc exists but this service-worker instance never saw its one-shot
+    // "offscreen_ready" — the SW was terminated and restarted while the doc
+    // survived (offscreen docs outlive the SW), so the broadcast went to a dead
+    // SW. Probe it directly instead of blocking ~20s for a broadcast that
+    // already fired; a booted doc reports ready and we mark it ourselves.
+    await probeExistingOffscreen();
+  }
+}
+
+// Mark the offscreen doc ready and release any RPCs blocked in waitForOffscreen.
+function markOffscreenReady(): void {
+  offscreenReady = true;
+  offscreenError = null;
+  setBadgeOk();
+  const waiters = readyWaiters.splice(0);
+  waiters.forEach((w) => w.resolve());
+}
+
+// Confirm an already-existing offscreen doc is alive *and* finished booting
+// (DB initialized). Used after a SW restart, when the ready broadcast was lost.
+// A ping reply with ready:true means it's safe to send RPCs.
+async function probeExistingOffscreen(): Promise<void> {
+  try {
+    const res = await chrome.runtime.sendMessage({ target: "offscreen", type: "ping" });
+    if ((res as { result?: { ready?: boolean } } | null)?.result?.ready) markOffscreenReady();
+  } catch {
+    // Still booting (or not listening yet); waitForOffscreen + the ready
+    // broadcast / timeout cover it.
   }
 }
 
@@ -171,12 +200,8 @@ export default defineBackground(() => {
       // ── Offscreen lifecycle events ──────────────────────────────────────
 
       if (kind === "offscreen_ready") {
-        offscreenReady = true;
-        offscreenError = null;
         console.log("[smriti] offscreen ready");
-        setBadgeOk();
-        const waiters = readyWaiters.splice(0);
-        waiters.forEach((w) => w.resolve());
+        markOffscreenReady();
         return;
       }
 
