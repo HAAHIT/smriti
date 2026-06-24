@@ -163,13 +163,13 @@ check(
 );
 
 check(
-  "unknown provider → passes through label, uses fallback color #888",
-  eq(providerBadge("some-new-ai"), { label: "some-new-ai", color: "#888" })
+  "unknown provider → normalized label, fallback color `#888`",
+  eq(providerBadge("some-new-ai"), { label: "Other", color: "`#888`" })
 );
 
 check(
-  "empty string → passes through empty label, fallback color",
-  eq(providerBadge(""), { label: "", color: "#888" })
+  "empty string → normalized label, fallback color",
+  eq(providerBadge(""), { label: "Other", color: "`#888`" })
 );
 
 // ─── memoryKindMeta ───────────────────────────────────────────────────────────

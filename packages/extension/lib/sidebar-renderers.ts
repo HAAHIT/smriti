@@ -179,7 +179,7 @@ export function renderHero(hero: HydratedHero, state: PanelState, handlers: Pane
     ${totalChapters > 0
       ? renderChapterList(segments, h.matchedChapterIdx, h.hit.conversation_id, handlers)
       : `<div class="rc-empty-inline">Indexing this conversation — chapters appear as embeddings finish.</div>`}
-    <button class="rc-cta" data-open-conv="${h.hit.conversation_id}" data-msg-id="${h.hit.message_id}">
+    <button class="rc-cta" data-open-conv="${escapeHtml(h.hit.conversation_id)}" data-msg-id="${escapeHtml(h.hit.message_id)}">
       Open in Smriti →
     </button>
   `;
@@ -261,7 +261,7 @@ export function renderChapterList(
     <div class="rc-chapter-list">
       ${segments.map((s, i) => `
         <button class="rc-chapter ${i === matchedIdx ? "rc-chapter-active" : ""}"
-                data-conv-id="${convId}" data-msg-id="${s.start_message_id}">
+                data-conv-id="${escapeHtml(convId)}" data-msg-id="${escapeHtml(s.start_message_id)}">
           <span class="rc-mono rc-chapter-num">${String(i + 1).padStart(2, "0")}</span>
           <span class="rc-chapter-title">${escapeHtml(s.preview || "(no preview)")}</span>
         </button>
@@ -377,7 +377,7 @@ export function renderOthers(
         const provider = providerBadge(it.hit.platform);
         const date = formatDate(it.hit.last_message_at);
         return `
-          <button class="rc-card" data-open-conv="${it.hit.conversation_id}" data-msg-id="${it.hit.message_id}">
+          <button class="rc-card" data-open-conv="${escapeHtml(it.hit.conversation_id)}" data-msg-id="${escapeHtml(it.hit.message_id)}">
             <div class="rc-card-title">${escapeHtml(it.hit.title ?? "(untitled)")}</div>
             <div class="rc-card-meta">
               <span class="rc-provider" style="--p:${provider.color}"></span>

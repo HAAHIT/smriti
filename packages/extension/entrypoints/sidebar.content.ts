@@ -137,7 +137,7 @@ function mountSidebar(): void {
     toast: null,
   };
 
-  let render: () => void = () => {};
+  let render: () => void = () => { };
   let proactiveTimer: number | null = null;
   let searchSeq = 0;
   // Set true while we inject, so the composer's resulting input event doesn't
@@ -175,7 +175,7 @@ function mountSidebar(): void {
           setState({ memories: mem });
         }
       })
-      .catch(() => {});
+      .catch(() => { });
 
     try {
       const res = await sendToHelper({ type: "search", query, limit: MAX_RESULTS });
@@ -376,6 +376,18 @@ function mountSidebar(): void {
 
   const handlers: PanelHandlers = {
     onSearch: (query: string) => {
+      if (!query.trim()) {
+        searchSeq += 1;
+        setState({
+          query: "",
+          loading: false,
+          hero: null,
+          others: [],
+          memories: [],
+          proactiveQuery: null,
+        });
+        return;
+      }
       setState({ query });
       debouncedManualSearch(query);
     },
@@ -463,12 +475,12 @@ function mountSidebar(): void {
     const ok = injectText(block);
     window.setTimeout(() => { suppressComposerInput = false; }, 400);
     if (ok) {
-      void sendToHelper({ type: "touch_memories", ids: hits.map((h) => h.id) }).catch(() => {});
+      void sendToHelper({ type: "touch_memories", ids: hits.map((h) => h.id) }).catch(() => { });
       flashToast(hits.length === 1 ? "Added to your prompt ✓" : `Added ${hits.length} memories ✓`);
     } else {
       const copied = await copyToClipboard(block);
       if (copied) {
-        void sendToHelper({ type: "touch_memories", ids: hits.map((h) => h.id) }).catch(() => {});
+        void sendToHelper({ type: "touch_memories", ids: hits.map((h) => h.id) }).catch(() => { });
         flashToast("Copied — paste into your message box (Ctrl+V)");
       } else {
         flashToast("Click your message box once, then retry.");
@@ -561,9 +573,9 @@ function synthesizeWhy(hit: SearchHit, query: string): string {
 // ─── messaging ──────────────────────────────────────────────────────────────
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnyReq = { type: string; [key: string]: any };
+type AnyReq = { type: string;[key: string]: any };
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnyResp = { ok: boolean; type: string; id: string; [key: string]: any };
+type AnyResp = { ok: boolean; type: string; id: string;[key: string]: any };
 
 async function sendToHelper(req: AnyReq): Promise<AnyResp> {
   const resp = await browser.runtime.sendMessage({ kind: "to_offscreen", ...req }) as
