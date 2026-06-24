@@ -9,11 +9,12 @@
 // db.export() on a small DB (<100MB) is <10ms; the 2-second debounce means
 // at most one flush per burst of writes rather than one per row.
 
-import initSqlJs, { type Database, type SqlJsStatic } from "sql.js";
+import type { Database, SqlJsStatic } from "sql.js";
+import initSqlJs from "fts5-sql-bundle";
 // Vite copies the WASM file to the output and replaces this import with the
 // extension-relative URL at build time.
 // @ts-ignore — Vite handles the ?url transform
-import sqlWasmUrl from "sql.js/dist/sql-wasm.wasm?url";
+import sqlWasmUrl from "fts5-sql-bundle/dist/sql-wasm.wasm?url";
 import { SCHEMA } from "./migrations.js";
 
 const OPFS_FILE = "smriti.db";
@@ -33,7 +34,7 @@ export async function initDb(): Promise<void> {
     console.warn("[smriti:db] storage.persist unavailable", e);
   }
 
-  _SQL = await initSqlJs({ locateFile: () => sqlWasmUrl as string });
+  _SQL = (await initSqlJs({ locateFile: () => sqlWasmUrl as string })) as unknown as SqlJsStatic;
 
   // Try to load an existing database from OPFS.
   let existing: Uint8Array | null = null;
@@ -46,7 +47,7 @@ export async function initDb(): Promise<void> {
     // File doesn't exist yet — fresh install.
   }
 
-  _db = existing?.length ? new _SQL.Database(existing) : new _SQL.Database();
+  _db = existing?.length ? new _SQL!.Database(existing) : new _SQL!.Database();
   _db.run("PRAGMA foreign_keys = ON");
 
   // Apply schema / migrations on every boot (idempotent).

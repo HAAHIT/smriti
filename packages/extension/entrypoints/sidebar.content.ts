@@ -41,12 +41,14 @@ import type {
   CaptureEvent,
   CaptureEventMessageAppended,
   ConversationMessageRow,
-  ConversationMeta,
   MemoryRecallHit,
   OutlineSegment,
-  Platform,
   SearchHit,
 } from "@smriti/shared";
+import { SIDEBAR_CSS } from "../lib/sidebar-styles";
+import { CurrentChat, PanelState, PanelHandlers, HydratedHero } from "../lib/sidebar-types";
+import { detectCurrentChat, providerBadge, formatDate, escapeHtml } from "../lib/sidebar-helpers";
+import { renderCollapsed, renderExpanded, populateBody, updateToast } from "../lib/sidebar-renderers";
 
 const SMRITI_PANEL_ID = "smriti-sidebar-root";
 const COLLAPSED_STATE_KEY = "smriti:sidebar:collapsed";
@@ -55,34 +57,6 @@ const PROACTIVE_MIN_CHARS = 6;
 const MAX_RESULTS = 5;
 const PANEL_WIDTH = 400;   // keep in sync with .rc-panel width in CSS
 const COLLAPSED_WIDTH = 36;
-
-interface HydratedHero {
-  hit: SearchHit;
-  segments: OutlineSegment[];
-  matchedChapterIdx: number;
-  matchPct: number;
-  why: string;
-}
-
-interface CurrentChat {
-  platform: Platform;
-  platformConvId: string;
-  meta: ConversationMeta | null;     // null = not in our archive yet
-  segments: OutlineSegment[];
-}
-
-interface PanelState {
-  collapsed: boolean;
-  query: string;
-  loading: boolean;
-  hero: HydratedHero | null;
-  others: Array<{ hit: SearchHit; matchPct: number; why: string }>;
-  proactiveQuery: string | null;
-  msgsIndexed: number | null;
-  currentChat: CurrentChat | null;
-  memories: MemoryRecallHit[];
-  toast: string | null;
-}
 
 export default defineContentScript({
   matches: [
@@ -163,7 +137,7 @@ function mountSidebar(): void {
     toast: null,
   };
 
-  let render: () => void = () => {};
+  let render: () => void = () => { };
   let proactiveTimer: number | null = null;
   let searchSeq = 0;
   // Set true while we inject, so the composer's resulting input event doesn't
@@ -201,7 +175,7 @@ function mountSidebar(): void {
           setState({ memories: mem });
         }
       })
-      .catch(() => {});
+      .catch(() => { });
 
     try {
       const res = await sendToHelper({ type: "search", query, limit: MAX_RESULTS });
@@ -400,234 +374,79 @@ function mountSidebar(): void {
     }, PROACTIVE_DEBOUNCE_MS);
   });
 
-  render = () => {
-    ui.innerHTML = "";
-    ui.appendChild(state.collapsed ? renderCollapsed() : renderExpanded());
-    applyHostShift(state.collapsed);
-  };
-
-  // ─── Collapsed tab ───
-  function renderCollapsed(): HTMLElement {
-    const el = document.createElement("button");
-    el.className = "rc-tab";
-    el.setAttribute("title", "Open Smriti");
-    el.innerHTML = `
-      <span class="rc-tab-title">Smriti</span>
-      <span class="rc-tab-sub">past you</span>
-    `;
-    el.addEventListener("click", () => {
-      setState({ collapsed: false });
-      localStorage.removeItem(COLLAPSED_STATE_KEY);
-    });
-    return el;
-  }
-
-  // ─── Expanded panel ───
-  function renderExpanded(): HTMLElement {
-    const panel = document.createElement("div");
-    panel.className = "rc-panel";
-
-    // Header
-    const header = document.createElement("div");
-    header.className = "rc-header";
-    header.innerHTML = `
-      <div class="rc-title-row">
-        <div class="rc-title">Smriti</div>
-        <div class="rc-smallcaps">past you</div>
-        <div class="rc-spacer"></div>
-        <button class="rc-icon-btn" data-act="close" title="Hide Smriti">×</button>
-      </div>
-      <div class="rc-search">
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" class="rc-search-icon">
-          <circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.4"></circle>
-          <path d="M11 11l3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"></path>
-        </svg>
-        <input type="text" class="rc-search-input" placeholder="Find anything from any AI…" />
-        ${state.loading ? '<span class="rc-mono rc-muted-text">…</span>' : ""}
-      </div>
-    `;
-    panel.appendChild(header);
-    const input = header.querySelector<HTMLInputElement>(".rc-search-input")!;
-    input.value = state.query;
-    input.addEventListener("input", (e) => {
-      const v = (e.target as HTMLInputElement).value;
-      setState({ query: v });
-      debouncedManualSearch(v);
-    });
-    header.querySelector("[data-act=close]")?.addEventListener("click", () => {
+  const handlers: PanelHandlers = {
+    onSearch: (query: string) => {
+      if (!query.trim()) {
+        searchSeq += 1;
+        setState({
+          query: "",
+          loading: false,
+          hero: null,
+          others: [],
+          memories: [],
+          proactiveQuery: null,
+        });
+        return;
+      }
+      setState({ query });
+      debouncedManualSearch(query);
+    },
+    onCollapse: () => {
       setState({ collapsed: true });
       localStorage.setItem(COLLAPSED_STATE_KEY, "1");
-    });
+    },
+    onExpand: () => {
+      setState({ collapsed: false });
+      localStorage.removeItem(COLLAPSED_STATE_KEY);
+    },
+    onInjectMemories: (hits: MemoryRecallHit[]) => {
+      void injectMemories(hits);
+    },
+    onInjectSingle: (hit: MemoryRecallHit) => {
+      void injectMemories([hit]);
+    },
+    onOpenViewer: (convId: string, msgId: string, query: string) => {
+      openViewer(convId, msgId, query);
+    },
+  };
 
-    // Body
-    const body = document.createElement("div");
-    body.className = "rc-body";
+  render = () => {
+    applyHostShift(state.collapsed);
 
-    // ── Memory recall (the hero) — whenever we have relevant memories for the
-    //    current draft or query, surface them at the very top with one-click
-    //    injection into the composer. ──
-    if (state.memories.length > 0) {
-      body.appendChild(renderMemoryRecall(state.memories));
+    if (state.collapsed) {
+      if (!ui.querySelector(".rc-tab")) {
+        ui.innerHTML = "";
+        ui.appendChild(renderCollapsed(handlers));
+      }
+      return;
     }
 
-    // ── Current chat outline (always at the top when we know which chat
-    //    the user is in and we have it in our archive). Hidden during an
-    //    active search to keep the focus on results. ──
-    const showCurrent = !state.query.trim() && state.currentChat?.meta;
-    if (showCurrent) {
-      body.appendChild(renderCurrentChat(state.currentChat!));
-    } else if (!state.query.trim() && state.currentChat && !state.currentChat.meta) {
-      body.appendChild(renderCurrentChatUnknown(state.currentChat));
+    // Create panel skeleton once
+    if (!ui.querySelector(".rc-panel")) {
+      ui.innerHTML = "";
+      ui.appendChild(renderExpanded(state, handlers));
+      return;
     }
 
-    const havingSomething = state.hero || state.query.trim() || state.proactiveQuery;
-    if (!havingSomething && !showCurrent) {
-      body.appendChild(renderIntro());
-    } else if (state.query.trim() && !state.hero && !state.loading) {
-      body.appendChild(renderEmpty());
-    } else {
-      if (state.hero) body.appendChild(renderHero(state.hero));
-      if (state.others.length > 0) body.appendChild(renderOthers(state.others));
-    }
-    panel.appendChild(body);
+    // Targeted updates — don't destroy the input or scroll container.
+    // populateBody() handles the full state machine (memories, currentChat,
+    // currentChatUnknown, intro, empty, hero, others) identically to
+    // renderExpanded() so incremental renders stay in sync.
+    const body = ui.querySelector<HTMLElement>(".rc-body");
+    if (body) populateBody(body, state, handlers);
 
-    // Footer
-    const footer = document.createElement("div");
-    footer.className = "rc-footer";
-    footer.innerHTML = `
-      <span class="rc-dot rc-dot-green"></span>
-      <span class="rc-mono">local</span>
-      <span class="rc-divider">·</span>
-      <span class="rc-mono">${state.msgsIndexed === null ? "—" : state.msgsIndexed} msgs indexed</span>
-      <div class="rc-spacer"></div>
-      <span class="rc-mono rc-muted-text">MiniLM-L6</span>
-      <span class="rc-divider">·</span>
-      <a class="rc-link" href="${reportIssueUrl(currentPlatform())}" target="_blank" rel="noopener">Report an issue ↗</a>
-    `;
-    panel.appendChild(footer);
+    // Toast — may appear/disappear on any render (e.g. flashToast()).
+    const panel = ui.querySelector<HTMLElement>(".rc-panel");
+    if (panel) updateToast(panel, state.toast);
 
-    if (state.toast) {
-      const toast = document.createElement("div");
-      toast.className = "rc-toast";
-      toast.textContent = state.toast;
-      panel.appendChild(toast);
-    }
+    // Update footer without rebuilding
+    const statsEl = ui.querySelector(".rc-stats-count");
+    if (statsEl) statsEl.textContent = String(state.msgsIndexed ?? "—");
 
-    return panel;
-  }
-
-  // ─── Intro (no query) ───
-  function renderIntro(): HTMLElement {
-    const el = document.createElement("div");
-    el.className = "rc-intro";
-    el.innerHTML = `
-      <div class="rc-smallcaps rc-muted-text">Your AI remembers you</div>
-      <div class="rc-intro-blurb">
-        Start typing a message and Smriti surfaces what you've already
-        established — your tools, decisions, and projects — so you can drop
-        it into the prompt in one click. No more re-explaining yourself to
-        every AI.
-      </div>
-      <div class="rc-divider-h"></div>
-      <div class="rc-smallcaps rc-muted-text">Or search your memory</div>
-      <div class="rc-suggestions">
-        ${["embeddings model choice", "rust enum bug", "rate limited backfill", "outline algorithm"]
-          .map((s) => `<button class="rc-suggest" data-q="${s.replace(/"/g, "&quot;")}">${s}</button>`)
-          .join("")}
-      </div>
-    `;
-    el.querySelectorAll<HTMLButtonElement>(".rc-suggest").forEach((b) => {
-      b.addEventListener("click", () => {
-        const q = b.getAttribute("data-q") ?? "";
-        setState({ query: q });
-        void runSearch(q);
-      });
-    });
-    return el;
-  }
-
-  // ─── Empty state ───
-  function renderEmpty(): HTMLElement {
-    const el = document.createElement("div");
-    el.className = "rc-empty";
-    el.innerHTML = `
-      <div class="rc-empty-title">Nothing for &ldquo;${escapeHtml(state.query)}&rdquo; yet.</div>
-      <div class="rc-empty-sub">Try a vaguer phrase — semantic recall catches paraphrase.</div>
-    `;
-    return el;
-  }
-
-  // ─── Current chat outline ───
-  // Shown when the user is on a captured conversation. The whole point of
-  // Smriti living inside claude.ai: a navigable index of the chat you're
-  // actually looking at, without scrolling.
-  function renderCurrentChat(cc: CurrentChat): HTMLElement {
-    const wrap = document.createElement("div");
-    wrap.className = "rc-current-wrap";
-    const meta = cc.meta!;
-    const provider = providerBadge(meta.platform);
-    const total = cc.segments.length;
-    wrap.innerHTML = `
-      <div class="rc-section-header">
-        <span class="rc-smallcaps rc-muted-text">You're here</span>
-      </div>
-      <div class="rc-current">
-        <div class="rc-current-title">${escapeHtml(meta.title ?? "(untitled)")}</div>
-        <div class="rc-current-meta">
-          <span class="rc-provider" style="--p:${provider.color}"></span>
-          <span>${provider.label}</span>
-          <span class="rc-divider">·</span>
-          <span class="rc-mono">${meta.message_count} msgs</span>
-          <span class="rc-divider">·</span>
-          <span class="rc-mono">${total} ${total === 1 ? "chapter" : "chapters"}</span>
-        </div>
-        ${renderChapterList(cc.segments, -1, meta.id)}
-        ${total === 0 ? `
-          <div class="rc-empty-inline">Indexing this conversation — chapters appear as embeddings finish.</div>
-        ` : ""}
-      </div>
-    `;
-    wrap.querySelectorAll<HTMLButtonElement>("[data-conv-id][data-msg-id]").forEach((b) => {
-      b.addEventListener("click", () => {
-        openViewer(b.getAttribute("data-conv-id")!, b.getAttribute("data-msg-id") ?? "", "");
-      });
-    });
-    return wrap;
-  }
-
-  function renderCurrentChatUnknown(cc: CurrentChat): HTMLElement {
-    const wrap = document.createElement("div");
-    wrap.className = "rc-current-wrap";
-    wrap.innerHTML = `
-      <div class="rc-section-header">
-        <span class="rc-smallcaps rc-muted-text">You're here</span>
-      </div>
-      <div class="rc-current rc-current-unknown">
-        <div class="rc-current-title-muted">New conversation</div>
-        <div class="rc-current-why">
-          This chat isn't in your archive yet. Send a message and it'll be captured.
-        </div>
-      </div>
-    `;
-    return wrap;
-  }
-
-  // Shared chapter-list renderer used by both the Current-chat section and
-  // the search hero card. matchedIdx = -1 means no highlight.
-  function renderChapterList(segments: OutlineSegment[], matchedIdx: number, convId: string): string {
-    if (segments.length === 0) return "";
-    return `
-      <div class="rc-chapter-list">
-        ${segments.map((s, i) => `
-          <button class="rc-chapter ${i === matchedIdx ? "rc-chapter-active" : ""}"
-                  data-conv-id="${convId}" data-msg-id="${s.start_message_id}">
-            <span class="rc-mono rc-chapter-num">${String(i + 1).padStart(2, "0")}</span>
-            <span class="rc-chapter-title">${escapeHtml(s.preview || "(no preview)")}</span>
-          </button>
-        `).join("")}
-      </div>
-    `;
-  }
+    // Update loading indicator
+    const loadingEl = ui.querySelector(".rc-loading") as HTMLElement | null;
+    if (loadingEl) loadingEl.style.display = state.loading ? "" : "none";
+  };
 
   // ─── Memory recall (the hero) ───
   // The thing that makes "your AI remembers you" real: relevant memories with
@@ -656,12 +475,12 @@ function mountSidebar(): void {
     const ok = injectText(block);
     window.setTimeout(() => { suppressComposerInput = false; }, 400);
     if (ok) {
-      void sendToHelper({ type: "touch_memories", ids: hits.map((h) => h.id) }).catch(() => {});
+      void sendToHelper({ type: "touch_memories", ids: hits.map((h) => h.id) }).catch(() => { });
       flashToast(hits.length === 1 ? "Added to your prompt ✓" : `Added ${hits.length} memories ✓`);
     } else {
       const copied = await copyToClipboard(block);
       if (copied) {
-        void sendToHelper({ type: "touch_memories", ids: hits.map((h) => h.id) }).catch(() => {});
+        void sendToHelper({ type: "touch_memories", ids: hits.map((h) => h.id) }).catch(() => { });
         flashToast("Copied — paste into your message box (Ctrl+V)");
       } else {
         flashToast("Click your message box once, then retry.");
@@ -676,144 +495,7 @@ function mountSidebar(): void {
     toastTimer = window.setTimeout(() => setState({ toast: null }), 2800);
   }
 
-  function renderMemoryRecall(hits: MemoryRecallHit[]): HTMLElement {
-    const wrap = document.createElement("div");
-    wrap.className = "rc-mem-wrap";
-    const count = hits.length;
-    wrap.innerHTML = `
-      <div class="rc-mem-header">
-        <span class="rc-spark">✦</span>
-        <span class="rc-smallcaps rc-accent">Smriti remembers</span>
-        <div class="rc-spacer"></div>
-        <span class="rc-mono rc-muted-text">${count}</span>
-      </div>
-      <div class="rc-mem-list">
-        ${hits.map((h, i) => {
-          const meta = memoryKindMeta(h.kind);
-          const prov = h.source_platform ? providerBadge(h.source_platform) : null;
-          return `
-            <div class="rc-mem">
-              <div class="rc-mem-top">
-                <span class="rc-mem-kind" style="--k:${meta.color}">${meta.label}</span>
-                ${h.pinned ? '<span class="rc-mem-pin" title="Pinned">📌</span>' : ""}
-                <div class="rc-spacer"></div>
-                <button class="rc-mem-inject" data-idx="${i}" title="Add just this to your prompt">+ inject</button>
-              </div>
-              <div class="rc-mem-text">${escapeHtml(h.text)}</div>
-              ${prov ? `<div class="rc-mem-src"><span class="rc-provider" style="--p:${prov.color}"></span>${prov.label} · ${formatDate(h.created_at)}</div>` : ""}
-            </div>
-          `;
-        }).join("")}
-      </div>
-      <button class="rc-cta rc-mem-cta" data-inject-all>
-        Inject ${count === 1 ? "this" : `all ${count}`} into prompt →
-      </button>
-    `;
-    wrap.querySelectorAll<HTMLButtonElement>(".rc-mem-inject").forEach((b) => {
-      b.addEventListener("click", () => {
-        const i = Number(b.getAttribute("data-idx"));
-        const h = hits[i];
-        if (h) void injectMemories([h]);
-      });
-    });
-    wrap.querySelector<HTMLButtonElement>("[data-inject-all]")?.addEventListener("click", () => {
-      void injectMemories(hits);
-    });
-    return wrap;
-  }
 
-  // ─── Hero card ───
-  function renderHero(h: HydratedHero): HTMLElement {
-    const wrap = document.createElement("div");
-    wrap.className = "rc-hero-wrap";
-
-    const headerLabel = state.query.trim() ? "Top match" : "Past you discussed this";
-    const provider = providerBadge(h.hit.platform);
-    const dateLabel = formatDate(h.hit.last_message_at);
-    const segments = h.segments;
-    const totalChapters = segments.length;
-
-    const card = document.createElement("div");
-    card.className = "rc-hero rc-pulse";
-    card.innerHTML = `
-      <div class="rc-hero-header">
-        <span class="rc-spark">✦</span>
-        <span class="rc-smallcaps rc-accent">${escapeHtml(headerLabel)}</span>
-      </div>
-      <div class="rc-hero-title">${escapeHtml(h.hit.title ?? "(untitled)")}</div>
-      <div class="rc-hero-why">${escapeHtml(h.why)}</div>
-      <div class="rc-hero-meta">
-        <span class="rc-provider" style="--p:${provider.color}"></span>
-        <span>${provider.label}</span>
-        <span class="rc-divider">·</span>
-        <span class="rc-mono">${dateLabel}</span>
-        <div class="rc-spacer"></div>
-        <span class="rc-mono rc-accent rc-bold">${h.matchPct}% match</span>
-      </div>
-      <div class="rc-hero-divider"></div>
-      <div class="rc-smallcaps rc-muted-text" style="margin-bottom:6px">
-        ${totalChapters > 0
-          ? `${totalChapters} ${totalChapters === 1 ? "chapter" : "chapters"}`
-          : "Outline"}
-      </div>
-      ${totalChapters > 0
-        ? renderChapterList(segments, h.matchedChapterIdx, h.hit.conversation_id)
-        : `<div class="rc-empty-inline">Indexing this conversation — chapters appear as embeddings finish.</div>`}
-      <button class="rc-cta" data-open-conv="${h.hit.conversation_id}" data-msg-id="${h.hit.message_id}">
-        Open in Smriti →
-      </button>
-    `;
-    // Click handlers for chapter buttons (they carry data-conv-id + data-msg-id).
-    card.querySelectorAll<HTMLButtonElement>(".rc-chapter").forEach((b) => {
-      b.addEventListener("click", () => {
-        const cid = b.getAttribute("data-conv-id") ?? h.hit.conversation_id;
-        const mid = b.getAttribute("data-msg-id") ?? h.hit.message_id;
-        openViewer(cid, mid, state.query.trim() || state.proactiveQuery || "");
-      });
-    });
-    card.querySelector<HTMLButtonElement>(".rc-cta")?.addEventListener("click", () => {
-      openViewer(h.hit.conversation_id, h.hit.message_id, state.query.trim() || state.proactiveQuery || "");
-    });
-    wrap.appendChild(card);
-    return wrap;
-  }
-
-  // ─── Secondary cards ("Also relevant") ───
-  function renderOthers(items: Array<{ hit: SearchHit; matchPct: number; why: string }>): HTMLElement {
-    const el = document.createElement("div");
-    el.className = "rc-others";
-    el.innerHTML = `
-      <div class="rc-smallcaps rc-muted-text rc-others-header">Also relevant</div>
-      <div class="rc-others-list">
-        ${items.map((it) => {
-          const provider = providerBadge(it.hit.platform);
-          const date = formatDate(it.hit.last_message_at);
-          return `
-            <button class="rc-card" data-open-conv="${it.hit.conversation_id}" data-msg-id="${it.hit.message_id}">
-              <div class="rc-card-title">${escapeHtml(it.hit.title ?? "(untitled)")}</div>
-              <div class="rc-card-meta">
-                <span class="rc-provider" style="--p:${provider.color}"></span>
-                <span>${provider.label}</span>
-                <span class="rc-divider">·</span>
-                <span class="rc-mono">${date}</span>
-                <div class="rc-spacer"></div>
-                <span class="rc-mono rc-muted-text">${it.matchPct}%</span>
-              </div>
-              <div class="rc-card-why">${escapeHtml(it.why)}</div>
-            </button>
-          `;
-        }).join("")}
-      </div>
-    `;
-    el.querySelectorAll<HTMLButtonElement>("[data-open-conv]").forEach((b) => {
-      b.addEventListener("click", () => {
-        const cid = b.getAttribute("data-open-conv")!;
-        const mid = b.getAttribute("data-msg-id") ?? "";
-        openViewer(cid, mid, state.query.trim() || state.proactiveQuery || "");
-      });
-    });
-    return el;
-  }
 
   let searchTimer: number | null = null;
   function debouncedManualSearch(q: string): void {
@@ -891,9 +573,9 @@ function synthesizeWhy(hit: SearchHit, query: string): string {
 // ─── messaging ──────────────────────────────────────────────────────────────
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnyReq = { type: string; [key: string]: any };
+type AnyReq = { type: string;[key: string]: any };
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnyResp = { ok: boolean; type: string; id: string; [key: string]: any };
+type AnyResp = { ok: boolean; type: string; id: string;[key: string]: any };
 
 async function sendToHelper(req: AnyReq): Promise<AnyResp> {
   const resp = await browser.runtime.sendMessage({ kind: "to_offscreen", ...req }) as
@@ -915,90 +597,6 @@ function openViewer(convId: string, msgId: string, q: string): void {
   window.open(url, "_blank", "noopener");
 }
 
-// ─── helpers ────────────────────────────────────────────────────────────────
-
-// Pull platform + platform_conv_id out of the current page URL.
-// The URLs we care about:
-//   claude.ai/chat/<uuid>
-//   chatgpt.com/c/<uuid>      (or /g/g-xxx/c/<uuid> for custom GPTs)
-//   gemini.google.com/app/<id>
-function detectCurrentChat(url: string): { platform: Platform; platformConvId: string } | null {
-  try {
-    const u = new URL(url);
-    if (u.hostname.endsWith("claude.ai")) {
-      const m = u.pathname.match(/^\/chat\/([0-9a-f-]{8,})/i);
-      if (m && m[1]) return { platform: "claude", platformConvId: m[1] };
-      return null;
-    }
-    if (u.hostname.endsWith("chatgpt.com")) {
-      const m = u.pathname.match(/\/c\/([\w-]{8,})/);
-      if (m && m[1]) return { platform: "chatgpt", platformConvId: m[1] };
-      return null;
-    }
-    if (u.hostname.endsWith("gemini.google.com")) {
-      const m = u.pathname.match(/\/app\/([\w-]{8,})/);
-      if (m && m[1]) return { platform: "gemini", platformConvId: m[1] };
-      return null;
-    }
-  } catch { /* malformed url */ }
-  return null;
-}
-
-// Which of the three supported hosts we're running on. The content script
-// only matches these three, so this always resolves.
-function currentPlatform(): Platform {
-  const h = location.hostname;
-  if (h.endsWith("chatgpt.com")) return "chatgpt";
-  if (h.endsWith("gemini.google.com")) return "gemini";
-  return "claude";
-}
-
-// Pre-filled "report a broken site" GitHub issue link — selectors on these
-// sites change often and we have no telemetry, so the user is the sensor.
-function reportIssueUrl(platform: Platform): string {
-  const v = chrome.runtime.getManifest().version;
-  return (
-    `https://github.com/HAAHIT/smriti/issues/new?title=${encodeURIComponent(`[${platform}] `)}` +
-    `&body=${encodeURIComponent(`Platform: ${platform}\nExtension: v${v}\nWhat broke:\n`)}`
-  );
-}
-
-function providerBadge(p: string): { label: string; color: string } {
-  switch (p) {
-    case "claude":      return { label: "Claude",      color: "#c96442" };
-    case "chatgpt":     return { label: "ChatGPT",     color: "#1f7a64" };
-    case "gemini":      return { label: "Gemini",      color: "#3b6cb5" };
-    case "claude_code": return { label: "Code",        color: "#6d5fa6" };
-    default:            return { label: p,             color: "#888" };
-  }
-}
-
-function memoryKindMeta(kind: string): { label: string; color: string } {
-  switch (kind) {
-    case "identity":   return { label: "identity",   color: "#8b3a2f" };
-    case "preference": return { label: "preference", color: "#1f7a64" };
-    case "project":    return { label: "project",    color: "#3b6cb5" };
-    case "decision":   return { label: "decision",   color: "#9a6b1f" };
-    default:           return { label: "fact",       color: "#6d5fa6" };
-  }
-}
-
-function formatDate(iso: string): string {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  } catch { return ""; }
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
 // ─── styles (shadow-DOM-scoped) ─────────────────────────────────────────────
 
 function injectStyles(shadow: ShadowRoot): void {
@@ -1015,517 +613,6 @@ function injectStyles(shadow: ShadowRoot): void {
   }
 
   const style = document.createElement("style");
-  style.textContent = `
-    :host, * { box-sizing: border-box; }
-    :host {
-      --bg: #f6f1e6;
-      --surface: #fcf9f1;
-      --surface-2: #f1ebdb;
-      --ink: #2a2620;
-      --ink-2: #4a4338;
-      --muted: #8a7f6b;
-      --muted-2: #b5aa94;
-      --hairline: #e3dac4;
-      --hairline-strong: #d3c8ae;
-      --accent: #8b3a2f;
-      --accent-soft: #d9a59c;
-      --highlight: #f3e1a6;
-      --highlight-strong: #e8c45a;
-      --chip-bg: rgba(0,0,0,0.04);
-      --serif: 'Source Serif 4', ui-serif, Georgia, 'Times New Roman', serif;
-      --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-      --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    }
-    @media (prefers-color-scheme: dark) {
-      :host {
-        --bg: #14130f;
-        --surface: #1b1a15;
-        --surface-2: #232118;
-        --ink: #ece4d0;
-        --ink-2: #c4bda9;
-        --muted: #8a8270;
-        --muted-2: #5f5947;
-        --hairline: #2c2a22;
-        --hairline-strong: #3a3729;
-        --accent: #d69960;
-        --accent-soft: #6b4d2e;
-        --highlight: #5a4612;
-        --highlight-strong: #c8983a;
-        --chip-bg: rgba(255,247,228,0.05);
-      }
-    }
-
-    /* ── Collapsed tab ── */
-    .rc-tab {
-      position: fixed;
-      top: 50%;
-      right: 0;
-      transform: translateY(-50%);
-      width: 36px;
-      padding: 16px 6px;
-      background: var(--bg);
-      border: 1px solid var(--hairline-strong);
-      border-right: none;
-      border-radius: 8px 0 0 8px;
-      cursor: pointer;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 10px;
-      color: var(--ink);
-      font-family: var(--sans);
-      box-shadow: -2px 0 8px rgba(40,30,20,0.08);
-    }
-    .rc-tab-title {
-      font-family: var(--serif);
-      font-weight: 600;
-      font-size: 14px;
-      writing-mode: vertical-rl;
-      transform: rotate(180deg);
-      letter-spacing: 0.04em;
-    }
-    .rc-tab-sub {
-      font-family: var(--mono);
-      font-size: 10px;
-      color: var(--muted);
-      writing-mode: vertical-rl;
-      transform: rotate(180deg);
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
-    }
-
-    /* ── Expanded panel ── */
-    .rc-panel {
-      width: 400px;
-      height: 100vh;
-      background: var(--bg);
-      color: var(--ink);
-      font-family: var(--sans);
-      display: flex;
-      flex-direction: column;
-      position: relative;
-      border-left: 2px solid var(--hairline-strong);
-      box-shadow: -8px 0 24px rgba(40,30,20,0.08);
-      font-size: 14px;
-      line-height: 1.5;
-    }
-    .rc-spacer { flex: 1; }
-    .rc-divider { color: var(--muted-2); }
-    .rc-divider-h { height: 1px; background: var(--hairline); margin: 14px 0; }
-    .rc-mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
-    .rc-bold { font-weight: 600; }
-    .rc-accent { color: var(--accent); }
-    .rc-smallcaps {
-      font-family: var(--sans);
-      text-transform: uppercase;
-      letter-spacing: 0.12em;
-      font-size: 10.5px;
-      font-weight: 600;
-      color: var(--muted);
-    }
-    .rc-muted-text { color: var(--muted); }
-
-    /* ── Header ── */
-    .rc-header {
-      padding: 14px 18px 12px;
-      border-bottom: 1px solid var(--hairline);
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      flex: 0 0 auto;
-    }
-    .rc-title-row { display: flex; align-items: center; gap: 10px; }
-    .rc-title {
-      font-family: var(--serif);
-      font-size: 18px;
-      font-weight: 600;
-      letter-spacing: -0.01em;
-      color: var(--ink);
-    }
-    .rc-icon-btn {
-      background: transparent;
-      border: none;
-      color: var(--muted);
-      cursor: pointer;
-      font-size: 18px;
-      line-height: 1;
-      width: 22px;
-      height: 22px;
-      padding: 0;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      border-radius: 3px;
-    }
-    .rc-icon-btn:hover { background: var(--surface-2); color: var(--ink); }
-    .rc-search {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 6px 10px;
-      border: 1px solid var(--hairline-strong);
-      border-radius: 5px;
-      background: var(--surface);
-    }
-    .rc-search-icon { color: var(--muted); flex: 0 0 12px; }
-    .rc-search-input {
-      flex: 1;
-      border: none;
-      background: transparent;
-      outline: none;
-      font-size: 13px;
-      font-family: var(--sans);
-      color: var(--ink);
-    }
-
-    /* ── Body ── */
-    .rc-body {
-      flex: 1;
-      overflow-y: auto;
-      overflow-x: hidden;
-      padding: 0 0 24px 0;
-    }
-    .rc-body::-webkit-scrollbar { width: 8px; }
-    .rc-body::-webkit-scrollbar-thumb { background: var(--hairline-strong); border-radius: 4px; }
-
-    /* ── Intro ── */
-    .rc-intro { padding: 18px 18px 24px; }
-    .rc-intro-blurb {
-      font-size: 12.5px;
-      color: var(--ink-2);
-      font-style: italic;
-      margin-top: 8px;
-      line-height: 1.55;
-    }
-    .rc-suggestions { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
-    .rc-suggest {
-      background: transparent;
-      border: none;
-      padding: 5px 8px;
-      margin: 0 -4px;
-      border-radius: 4px;
-      text-align: left;
-      font-size: 12.5px;
-      color: var(--ink-2);
-      cursor: pointer;
-      font-family: var(--sans);
-      font-style: italic;
-    }
-    .rc-suggest:hover { background: var(--surface-2); }
-
-    /* ── Empty ── */
-    .rc-empty { padding: 40px 22px; color: var(--muted); font-style: italic; }
-    .rc-empty-title { font-family: var(--serif); font-size: 15px; margin-bottom: 6px; color: var(--ink-2); }
-    .rc-empty-sub { font-size: 12.5px; }
-
-    /* ── Current chat section ── */
-    .rc-current-wrap { padding: 16px 18px 0; }
-    .rc-section-header { margin-bottom: 6px; }
-    .rc-current {
-      padding: 12px 14px;
-      background: var(--surface);
-      border: 1px solid var(--hairline);
-      border-radius: 4px;
-    }
-    .rc-current-title {
-      font-family: var(--serif);
-      font-size: 14px;
-      font-weight: 600;
-      color: var(--ink);
-      line-height: 1.3;
-      margin-bottom: 6px;
-    }
-    .rc-current-title-muted {
-      font-family: var(--serif);
-      font-size: 13.5px;
-      font-style: italic;
-      color: var(--muted);
-      margin-bottom: 4px;
-    }
-    .rc-current-meta {
-      display: flex;
-      align-items: center;
-      gap: 7px;
-      font-size: 11px;
-      color: var(--muted);
-      margin-bottom: 10px;
-    }
-    .rc-current-why {
-      font-size: 11.5px;
-      color: var(--muted);
-      font-style: italic;
-      line-height: 1.5;
-    }
-    .rc-current-unknown { border-style: dashed; }
-    .rc-empty-inline {
-      font-size: 11.5px;
-      color: var(--muted);
-      font-style: italic;
-      padding: 6px 0 4px;
-    }
-
-    /* ── Hero card ── */
-    .rc-hero-wrap { padding: 16px 18px 0; }
-    .rc-hero {
-      padding: 14px 16px 14px;
-      background: var(--surface);
-      border: 1px solid var(--hairline-strong);
-      border-radius: 4px;
-      box-shadow: 0 1px 0 rgba(60,50,40,0.05);
-    }
-    .rc-pulse { animation: rcPulseGlow 2.4s ease-out 1; }
-    @keyframes rcPulseGlow {
-      0%   { box-shadow: 0 0 0 0 transparent; }
-      15%  { box-shadow: 0 0 0 6px var(--highlight); }
-      100% { box-shadow: 0 0 0 0 transparent; }
-    }
-    .rc-hero-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-    .rc-spark { color: var(--accent); font-size: 13px; }
-    .rc-hero-title {
-      font-family: var(--serif);
-      font-size: 16px;
-      font-weight: 600;
-      line-height: 1.25;
-      color: var(--ink);
-      margin-bottom: 6px;
-    }
-    .rc-hero-why {
-      font-size: 11.5px;
-      color: var(--muted);
-      font-style: italic;
-      margin-bottom: 10px;
-      line-height: 1.5;
-    }
-    .rc-hero-meta {
-      display: flex;
-      align-items: center;
-      gap: 7px;
-      font-size: 11px;
-      color: var(--muted);
-      margin-bottom: 10px;
-    }
-    .rc-provider {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: var(--p, var(--muted));
-      display: inline-block;
-    }
-    .rc-hero-divider {
-      height: 1px;
-      background: var(--hairline);
-      margin: 0 0 10px 0;
-    }
-
-    /* ── Chapter list ── */
-    .rc-chapter-list { display: flex; flex-direction: column; gap: 1px; margin-bottom: 12px; }
-    .rc-chapter {
-      background: transparent;
-      border: none;
-      padding: 4px 6px;
-      margin: 0 -6px;
-      border-radius: 3px;
-      cursor: pointer;
-      text-align: left;
-      display: flex;
-      align-items: baseline;
-      gap: 8px;
-      font-family: var(--sans);
-      color: var(--ink-2);
-      line-height: 1.35;
-    }
-    .rc-chapter:hover { background: var(--surface-2); }
-    .rc-chapter-num {
-      font-size: 9.5px;
-      color: var(--muted-2);
-      flex: 0 0 18px;
-    }
-    .rc-chapter-title {
-      font-family: var(--serif);
-      font-size: 12.5px;
-      font-weight: 500;
-      flex: 1;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      display: -webkit-box;
-      -webkit-line-clamp: 2;
-      -webkit-box-orient: vertical;
-    }
-    .rc-chapter-active .rc-chapter-title {
-      color: var(--accent);
-      font-weight: 600;
-      text-decoration: underline;
-      text-decoration-color: var(--accent-soft);
-      text-underline-offset: 2px;
-    }
-
-    /* ── CTA ── */
-    .rc-cta {
-      width: 100%;
-      padding: 9px 12px;
-      background: var(--accent);
-      color: #f6f0e3;
-      border: none;
-      border-radius: 3px;
-      cursor: pointer;
-      font-size: 12.5px;
-      font-family: var(--sans);
-      font-weight: 600;
-      letter-spacing: 0.02em;
-      text-align: center;
-      transition: filter 0.1s;
-    }
-    .rc-cta:hover { filter: brightness(1.08); }
-
-    /* ── Others ── */
-    .rc-others { padding: 22px 18px 0; }
-    .rc-others-header { margin-bottom: 8px; }
-    .rc-others-list { display: flex; flex-direction: column; gap: 8px; }
-    .rc-card {
-      background: transparent;
-      border: 1px solid var(--hairline);
-      border-radius: 3px;
-      padding: 10px 12px;
-      cursor: pointer;
-      text-align: left;
-      display: flex;
-      flex-direction: column;
-      gap: 5px;
-      color: var(--ink-2);
-      font-family: var(--sans);
-      transition: border-color 0.12s, background 0.12s;
-    }
-    .rc-card:hover { border-color: var(--hairline-strong); background: var(--surface); }
-    .rc-card-title {
-      font-family: var(--serif);
-      font-size: 13px;
-      font-weight: 600;
-      line-height: 1.3;
-      color: var(--ink);
-    }
-    .rc-card-meta {
-      display: flex;
-      align-items: center;
-      gap: 7px;
-      font-size: 10.5px;
-      color: var(--muted);
-    }
-    .rc-card-why {
-      font-size: 11px;
-      color: var(--muted);
-      font-style: italic;
-      line-height: 1.45;
-    }
-
-    /* ── Memory recall (hero) ── */
-    .rc-mem-wrap {
-      padding: 16px 18px 4px;
-    }
-    .rc-mem-header {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 10px;
-    }
-    .rc-mem-list {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      margin-bottom: 12px;
-    }
-    .rc-mem {
-      padding: 10px 12px;
-      background: var(--surface);
-      border: 1px solid var(--hairline-strong);
-      border-radius: 5px;
-      border-left: 3px solid var(--accent-soft);
-    }
-    .rc-mem-top {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      margin-bottom: 6px;
-    }
-    .rc-mem-kind {
-      font-family: var(--sans);
-      font-size: 9.5px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.09em;
-      color: var(--k, var(--accent));
-      padding: 1px 6px;
-      border-radius: 3px;
-      background: color-mix(in srgb, var(--k, var(--accent)) 12%, transparent);
-    }
-    .rc-mem-pin { font-size: 10px; }
-    .rc-mem-inject {
-      background: transparent;
-      border: 1px solid var(--hairline-strong);
-      color: var(--accent);
-      cursor: pointer;
-      font-family: var(--mono);
-      font-size: 10px;
-      padding: 2px 8px;
-      border-radius: 4px;
-      transition: background 0.1s, border-color 0.1s;
-    }
-    .rc-mem-inject:hover { background: var(--surface-2); border-color: var(--accent-soft); }
-    .rc-mem-text {
-      font-family: var(--serif);
-      font-size: 13px;
-      line-height: 1.4;
-      color: var(--ink);
-    }
-    .rc-mem-src {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      margin-top: 6px;
-      font-size: 10px;
-      color: var(--muted);
-      font-family: var(--mono);
-    }
-    .rc-mem-cta { margin-bottom: 4px; }
-
-    /* ── Toast ── */
-    .rc-toast {
-      position: absolute;
-      bottom: 52px;
-      left: 50%;
-      transform: translateX(-50%);
-      background: var(--ink);
-      color: var(--bg);
-      font-family: var(--sans);
-      font-size: 12px;
-      font-weight: 500;
-      padding: 8px 16px;
-      border-radius: 20px;
-      box-shadow: 0 4px 16px rgba(40,30,20,0.25);
-      animation: rcToastIn 0.18s ease-out;
-      white-space: nowrap;
-      z-index: 10;
-    }
-    @keyframes rcToastIn {
-      from { opacity: 0; transform: translateX(-50%) translateY(6px); }
-      to   { opacity: 1; transform: translateX(-50%) translateY(0); }
-    }
-
-    /* ── Footer ── */
-    .rc-footer {
-      padding: 8px 18px;
-      border-top: 1px solid var(--hairline);
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 10.5px;
-      color: var(--muted);
-      background: var(--bg);
-      flex: 0 0 auto;
-    }
-    .rc-dot { width: 6px; height: 6px; border-radius: 50%; }
-    .rc-dot-green { background: #1f7a64; }
-    .rc-link { color: var(--muted); text-decoration: none; white-space: nowrap; }
-    .rc-link:hover { color: var(--accent); }
-  `;
+  style.textContent = SIDEBAR_CSS
   shadow.appendChild(style);
 }
