@@ -1766,8 +1766,10 @@ function OnboardingStep1({ onNext }: { onNext: () => void }) {
         borderRadius: 6, padding: "12px 16px", marginBottom: 28,
         fontSize: 13, color: "var(--ink-2)", lineHeight: 1.6,
       }}>
-        <strong style={{ color: "var(--ink)" }}>Everything stays in your browser.</strong>{" "}
-        Nothing is uploaded — there's no server.
+        <strong style={{ color: "var(--ink)" }}>Everything stays on your device.</strong>{" "}
+        Your memory is built and stored locally. The only network calls are Smriti reading your
+        own chat history from the AI sites you're already signed into — plus optional
+        end-to-end-encrypted sync, if you turn it on.
       </div>
       <PrimaryButton onClick={onNext}>Next</PrimaryButton>
     </div>
@@ -1792,8 +1794,10 @@ function OnboardingStep2({ onNext }: { onNext: () => void }) {
       </div>
 
       <p style={{ fontSize: 12.5, color: "var(--muted)", fontStyle: "italic", margin: "0 0 28px", lineHeight: 1.6 }}>
-        Gemini is captured live as you chat — no import needed. Imports keep running in the
-        background, so it's safe to continue even while one is in progress.
+        Smriti imports using your existing signed-in session on each site — no password, and it
+        works even with no tab open; just make sure you're signed in to claude.ai / chatgpt.com in
+        this browser. Gemini is captured live as you chat — no import needed. Imports keep running
+        in the background, so it's safe to continue even while one is in progress.
       </p>
 
       <div style={{ display: "flex", gap: 10 }}>
@@ -1859,6 +1863,9 @@ function ImportCard({ platform, label, color }: { platform: "claude" | "chatgpt"
   const pct = progress?.total_known && progress.total_known > 0
     ? Math.round((progress.total_fetched / progress.total_known) * 100)
     : null;
+  const notSignedIn = phase === "failed" && /signed in/i.test(progress?.message ?? "");
+  const siteLabel = platform === "claude" ? "claude.ai" : "chatgpt.com";
+  const siteUrl = `https://${siteLabel}`;
 
   return (
     <div style={{
@@ -1866,7 +1873,10 @@ function ImportCard({ platform, label, color }: { platform: "claude" | "chatgpt"
       borderRadius: 6, padding: "14px 16px",
     }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        <div style={{ width: 10, height: 10, borderRadius: 5, background: color, flexShrink: 0 }} />
+        <div
+          className={isActive ? "smriti-dot-active" : undefined}
+          style={{ width: 10, height: 10, borderRadius: 5, background: color, flexShrink: 0 }}
+        />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="serif" style={{ fontSize: 15, fontWeight: 600 }}>{label}</div>
           <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>
@@ -1875,7 +1885,7 @@ function ImportCard({ platform, label, color }: { platform: "claude" | "chatgpt"
                 ? `Imported ${progress.total_fetched} conversation${progress.total_fetched === 1 ? "" : "s"} ✓`
                 : `Imported ${progress.total_fetched} so far — partial`
               : phase === "failed"
-              ? "Import failed — click to retry"
+              ? (progress?.message ?? "Import failed — click to retry")
               : isActive
               ? "Importing your history…"
               : "Pull in your past conversations"}
@@ -1927,6 +1937,99 @@ function ImportCard({ platform, label, color }: { platform: "claude" | "chatgpt"
           )}
         </div>
       )}
+
+      {notSignedIn && (
+        <div style={{ marginTop: 8 }}>
+          <a href={siteUrl} target="_blank" rel="noopener" style={{ fontSize: 11.5, color: "var(--accent)", fontWeight: 600, textDecoration: "none" }}>
+            Open {siteLabel} to sign in ↗
+          </a>
+        </div>
+      )}
+    </div>
+  );
+}
+
+type BuildProgress = { processed: number; total: number; created: number };
+
+/**
+ * In-onboarding "try it now" demo: type like you're starting an AI chat and
+ * watch Smriti recall what it just learned. It's the recall half of the hero
+ * loop, self-contained (uses the recall_memories RPC, no host site needed), so
+ * the user sees the payoff work before leaving onboarding.
+ */
+function TryRecall() {
+  const [q, setQ] = useState("");
+  const [hits, setHits] = useState<MemoryItem[] | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const query = q.trim();
+    if (query.length < 3) { setHits(null); setLoading(false); return; }
+    setLoading(true);
+    const t = setTimeout(async () => {
+      try {
+        const r = await sendToHelper({ type: "recall_memories", query, limit: 4 });
+        setHits((r.memories as MemoryItem[]) ?? []);
+      } catch {
+        setHits([]);
+      } finally {
+        setLoading(false);
+      }
+    }, 350);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  const ready = q.trim().length >= 3;
+
+  return (
+    <div style={{ marginTop: 24 }}>
+      <div className="smallcaps" style={{ marginBottom: 8 }}>Try it now</div>
+      <input
+        type="text"
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        aria-label="Try recall"
+        placeholder="Ask about yourself — e.g. “what am I working on?” or “what do I prefer?”"
+        style={{
+          width: "100%", boxSizing: "border-box",
+          background: "var(--surface)", border: "1px solid var(--hairline)",
+          borderRadius: 6, padding: "10px 12px", fontSize: 13.5,
+          color: "var(--ink)", fontFamily: "var(--sans)", outline: "none",
+        }}
+      />
+
+      {ready && hits && hits.length > 0 && (
+        <div style={{
+          marginTop: 12, background: "var(--surface)",
+          border: "1px solid var(--hairline)", borderRadius: 6, padding: "12px 14px",
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 10 }}>
+            <span style={{ color: "var(--accent)" }}>✦</span>
+            <span className="smallcaps" style={{ color: "var(--accent)" }}>Smriti remembers</span>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {hits.map((m) => (
+              <div key={m.id} style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+                <span className="mono" style={{
+                  fontSize: 10, textTransform: "uppercase", letterSpacing: "0.04em",
+                  color: kindColor(m.kind), padding: "1px 6px", borderRadius: 3, flexShrink: 0,
+                  background: "color-mix(in srgb, " + kindColor(m.kind) + " 12%, transparent)",
+                }}>{m.kind}</span>
+                <span style={{ fontSize: 13, color: "var(--ink-2)", lineHeight: 1.45 }}>{m.text}</span>
+              </div>
+            ))}
+          </div>
+          <div style={{ marginTop: 10, fontSize: 11.5, color: "var(--muted)", fontStyle: "italic", lineHeight: 1.5 }}>
+            This is what Smriti surfaces as you type in any AI chat — one click drops it into your prompt.
+          </div>
+        </div>
+      )}
+
+      {ready && !loading && hits && hits.length === 0 && (
+        <div style={{ marginTop: 10, fontSize: 12, color: "var(--muted)", fontStyle: "italic", lineHeight: 1.5 }}>
+          Nothing matched that yet — try a topic you've actually discussed with an AI, or keep chatting and Smriti will learn more.
+        </div>
+      )}
     </div>
   );
 }
@@ -1934,16 +2037,57 @@ function ImportCard({ platform, label, color }: { platform: "claude" | "chatgpt"
 function OnboardingStep3({ onDone }: { onDone: () => void }) {
   const [building, setBuilding] = useState(false);
   const [stats, setStats] = useState<MemoryStats | null>(null);
+  const [progress, setProgress] = useState<BuildProgress | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [importActive, setImportActive] = useState(false);
+
+  // Live progress streamed from the offscreen build loop (build_progress).
+  useEffect(() => {
+    const handler = (msg: unknown) => {
+      if (typeof msg !== "object" || msg === null) return;
+      const m = msg as { kind?: string; processed?: number; total?: number; created?: number };
+      if (m.kind !== "build_progress") return;
+      setProgress({ processed: m.processed ?? 0, total: m.total ?? 0, created: m.created ?? 0 });
+    };
+    browser.runtime.onMessage.addListener(handler);
+    return () => browser.runtime.onMessage.removeListener(handler);
+  }, []);
+
+  // Know whether a history import is still running, so a zero-result build
+  // reads as "wait for the import" rather than a dead end.
+  useEffect(() => {
+    const ACTIVE = ["discovering", "fetching", "rate_limited"];
+    browser.runtime.sendMessage({ kind: "get_backfill_progress" })
+      .then((resp: unknown) => {
+        const r = resp as { ok?: boolean; progress?: BackfillProgress | null } | undefined;
+        const p = r?.ok ? r.progress : undefined;
+        if (p) setImportActive(ACTIVE.includes(p.state));
+      }).catch(() => {});
+    const handler = (msg: unknown) => {
+      if (typeof msg !== "object" || msg === null) return;
+      const m = msg as { kind?: string; progress?: BackfillProgress };
+      if (m.kind !== "backfill_progress" || !m.progress) return;
+      setImportActive(ACTIVE.includes(m.progress.state));
+    };
+    browser.runtime.onMessage.addListener(handler);
+    return () => browser.runtime.onMessage.removeListener(handler);
+  }, []);
 
   const buildNow = useCallback(async () => {
     setBuilding(true);
+    setError(null);
+    setProgress(null);
+    setStats(null);
     try {
       const r = await sendToHelper({ type: "build_memory_now" });
       if (r.ok) setStats(r.stats as MemoryStats);
-    } catch {
-      // leave stats unset so the button reappears for a retry
+    } catch (e) {
+      // Surface the failure (e.g. offscreen never became ready) instead of
+      // silently leaving the button — the user gets a reason and a retry.
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBuilding(false);
+      setProgress(null);
     }
   }, []);
 
@@ -1963,9 +2107,35 @@ function OnboardingStep3({ onDone }: { onDone: () => void }) {
       </p>
 
       {!stats && (
-        <PrimaryButton onClick={buildNow} disabled={building}>
-          {building ? "Building…" : "Build my memory"}
-        </PrimaryButton>
+        <>
+          <PrimaryButton onClick={buildNow} disabled={building}>
+            {building ? "Building…" : error ? "Try again" : "Build my memory"}
+          </PrimaryButton>
+
+          {building && (
+            <div style={{ marginTop: 14, maxWidth: 440 }}>
+              <div style={{ fontSize: 12.5, color: "var(--muted)" }}>
+                {progress && progress.total > 0
+                  ? `Scanned ${Math.min(progress.processed, progress.total)} / ${progress.total} messages · learned ${progress.created} ${progress.created === 1 ? "fact" : "facts"} so far`
+                  : "Scanning your conversations…"}
+              </div>
+              <div style={{ background: "var(--surface-2)", borderRadius: 3, height: 4, marginTop: 8, overflow: "hidden" }}>
+                <div style={{
+                  width: progress && progress.total > 0
+                    ? `${Math.min(100, Math.round((Math.min(progress.processed, progress.total) / progress.total) * 100))}%`
+                    : "8%",
+                  height: "100%", background: "var(--accent)", transition: "width 0.4s ease",
+                }} />
+              </div>
+            </div>
+          )}
+
+          {error && !building && (
+            <div style={{ marginTop: 12, fontSize: 12.5, color: "var(--accent)", maxWidth: 480, lineHeight: 1.5 }}>
+              Couldn't build memory: {error}. Give the extension a moment to finish loading, then try again.
+            </div>
+          )}
+        </>
       )}
 
       {stats && stats.total > 0 && (
@@ -1991,18 +2161,33 @@ function OnboardingStep3({ onDone }: { onDone: () => void }) {
       )}
 
       {stats && stats.total === 0 && (
-        <div style={{
-          background: "var(--surface)", border: "1px solid var(--hairline)",
-          borderRadius: 6, padding: "14px 16px", marginBottom: 8,
-          fontSize: 13.5, color: "var(--ink-2)", fontStyle: "italic",
-        }}>
-          No history yet — Smriti learns as you chat.
-        </div>
+        <>
+          <div style={{
+            background: "var(--surface)", border: "1px solid var(--hairline)",
+            borderRadius: 6, padding: "14px 16px", marginBottom: 12,
+            fontSize: 13.5, color: "var(--ink-2)", fontStyle: "italic",
+          }}>
+            {importActive
+              ? "Your import is still running in the background — give it a moment, then build again."
+              : "No history yet — import above, or just keep chatting and Smriti learns as you go."}
+          </div>
+          <PrimaryButton onClick={buildNow} disabled={building}>
+            {building ? "Building…" : "Build again"}
+          </PrimaryButton>
+        </>
       )}
+
+      {stats && stats.total > 0 && <TryRecall />}
 
       {stats && (
         <>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8, margin: "20px 0" }}>
+          {stats.total > 0 && (
+            <div style={{ fontSize: 12.5, color: "var(--muted)", margin: "22px 0 0", lineHeight: 1.5 }}>
+              Now see it live — open a chat and start typing; Smriti surfaces what it remembers,
+              ready to inject into your prompt in one click.
+            </div>
+          )}
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, margin: "12px 0" }}>
             {[
               { href: "https://claude.ai/new", label: "Open claude.ai", color: "var(--provider-claude)" },
               { href: "https://chatgpt.com/", label: "Open chatgpt.com", color: "var(--provider-chatgpt)" },

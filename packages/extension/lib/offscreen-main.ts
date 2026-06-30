@@ -53,6 +53,11 @@ import type { CaptureEvent, Platform, MemoryKind, MemorySource, NMResponse } fro
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 
+// True once initDb() has completed. Surfaced via the "ping" RPC so a restarted
+// background service worker can confirm this (surviving) doc is ready without
+// waiting for the one-shot "offscreen_ready" broadcast it already missed.
+let dbReady = false;
+
 /** Initialize the DB, start the index worker, and signal readiness. */
 async function boot(): Promise<void> {
   console.log("[smriti:offscreen] booting");
@@ -60,6 +65,7 @@ async function boot(): Promise<void> {
     await initDb();
     console.log("[smriti:offscreen] db ready");
     startIndexWorker();
+    dbReady = true;
     // Notify background that offscreen is ready.
     chrome.runtime.sendMessage({ kind: "offscreen_ready" }).catch(() => {});
     console.log("[smriti:offscreen] ready");
@@ -99,7 +105,7 @@ async function handleMessage(
 ): Promise<unknown> {
   switch (m.type) {
     case "ping":
-      return { pong: true };
+      return { pong: true, ready: dbReady };
 
     // hello — backward compat with options page version check.
     case "hello":
@@ -253,20 +259,33 @@ async function handleMessage(
       return { ok: true };
     }
 
-    // Force a synchronous extraction pass over the whole backlog so the user
-    // sees their memory materialize immediately (the "Build my memory" button).
+    // Run extraction over the whole backlog so the user sees their memory
+    // materialize (the "Build my memory" button). Chunked and yielding so the
+    // single offscreen thread stays responsive and can stream live progress to
+    // the UI instead of blocking opaquely on one long synchronous pass.
     case "build_memory_now": {
+      const total = pendingExtractionCount();
       let created = 0;
       let processed = 0;
       let guard = 0;
-      while (pendingExtractionCount() > 0 && guard < 400) {
-        const r = extractionSweep(256);
+      const emitBuild = () =>
+        chrome.runtime
+          .sendMessage({ kind: "build_progress", processed, total, created })
+          .catch(() => {});
+      emitBuild();
+      // 128-msg chunks (×800 guard ≈ 102k messages) — small enough for smooth
+      // progress, with a yield between each so broadcasts flush and the
+      // keepalive ping can run.
+      while (guard < 800) {
+        const r = extractionSweep(128);
+        if (r.processed === 0) break;
         created += r.created;
         processed += r.processed;
-        if (r.processed === 0) break;
+        emitBuild();
+        await new Promise((res) => setTimeout(res, 0));
         guard++;
       }
-      return { created, processed, stats: memoryStats() };
+      return { created, processed, total, stats: memoryStats() };
     }
 
     case "wipe_archive": {

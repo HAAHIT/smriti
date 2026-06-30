@@ -25,10 +25,24 @@ interface ActiveJob {
   queue: Array<{ orgId: string; convId: string }>;
   startedAt: number;
   cancelled: boolean;
+  message?: string; // human-readable reason on failure (e.g. not signed in)
 }
 
 const active = new Map<Platform, ActiveJob>();
 let lastProgressEmit = 0;
+
+// Thrown by the API helpers when the platform rejects us for lack of a
+// signed-in session, so the runner can surface an actionable "sign in" message
+// instead of a raw status code.
+const NOT_SIGNED_IN = "NOT_SIGNED_IN";
+
+function failureMessage(e: unknown, platform: Platform): string {
+  if (e instanceof Error && e.message === NOT_SIGNED_IN) {
+    const site = platform === "claude" ? "claude.ai" : platform === "chatgpt" ? "chatgpt.com" : String(platform);
+    return `Not signed in to ${site}. Open ${site}, sign in, then retry.`;
+  }
+  return String(e);
+}
 
 export function getBackfillStatuses(filter?: Platform): BackfillJobStatus[] {
   const rows = filter
@@ -77,7 +91,8 @@ export async function startBackfill(platform: Platform): Promise<{ resuming: boo
   void runJob(job).catch((e) => {
     console.error("[smriti:backfill] job crashed", String(e));
     job.state = "failed";
-    persistJob(job, String(e));
+    job.message = failureMessage(e, platform);
+    persistJob(job, job.message);
     emitProgress(job, true);
     sendDone(job);
     active.delete(platform);
@@ -100,7 +115,8 @@ async function runJob(job: ActiveJob): Promise<void> {
     job.state = job.errors > 0 ? "partial" : "complete";
   } catch (e) {
     job.state = "failed";
-    persistJob(job, String(e));
+    job.message = failureMessage(e, job.platform);
+    persistJob(job, job.message);
     emitProgress(job, true);
     sendDone(job);
     active.delete(job.platform);
@@ -179,6 +195,7 @@ async function runClaude(job: ActiveJob): Promise<void> {
 
 async function claudeGet<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`, { credentials: "include" });
+  if (res.status === 401 || res.status === 403) throw new Error(NOT_SIGNED_IN);
   if (!res.ok) throw new Error(`claude api ${path}: status ${res.status}`);
   return res.json() as Promise<T>;
 }
@@ -263,6 +280,7 @@ async function runChatGPT(job: ActiveJob): Promise<void> {
 
 async function chatGptGet<T>(path: string): Promise<T> {
   const res = await fetch(`${CHATGPT_BASE}${path}`, { credentials: "include" });
+  if (res.status === 401 || res.status === 403) throw new Error(NOT_SIGNED_IN);
   if (!res.ok) throw new Error(`chatgpt api ${path}: status ${res.status}`);
   return res.json() as Promise<T>;
 }
@@ -438,6 +456,7 @@ function emitProgress(job: ActiveJob, force = false): void {
     total_fetched: job.total_fetched,
     latest_titles: [...job.latest_titles],
     eta_ms: eta,
+    message: job.message,
   };
   // Send to background script (and any open UI pages listening).
   chrome.runtime.sendMessage({ kind: "backfill_progress", progress }).catch(() => {});
