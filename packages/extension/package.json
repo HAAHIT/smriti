@@ -14,6 +14,7 @@
     "test:sync": "tsx scripts/test-sync.ts",
     "test:sidebar-helpers": "tsx scripts/test-sidebar-helpers.ts",
     "test:sidebar-renderers": "tsx scripts/test-sidebar-renderers.ts",
+    "test:okf": "tsx scripts/test-okf-renderer.ts",
     "fetch:model": "node scripts/fetch-model.mjs",
     "postinstall": "wxt prepare"
   },

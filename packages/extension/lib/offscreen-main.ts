@@ -49,7 +49,16 @@ import {
   pendingExtractionCount,
 } from "../lib/memory.js";
 import { getSyncStatus, setupSync, joinSync, syncNow, disableSync } from "../lib/sync.js";
-import type { CaptureEvent, Platform, MemoryKind, MemorySource, NMResponse } from "@smriti/shared";
+import {
+  getVaultStatus,
+  enableVault,
+  disableVault,
+  syncRound,
+  syncConversation,
+  resyncAll,
+  startVaultSyncLoop,
+} from "./vault-sync.js";
+import type { CaptureEvent, Platform, MemoryKind, MemorySource, SearchHit } from "@smriti/shared";
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 
@@ -60,15 +69,20 @@ let dbReady = false;
 
 /** Initialize the DB, start the index worker, and signal readiness. */
 async function boot(): Promise<void> {
+  const t0 = Date.now();
   console.log("[smriti:offscreen] booting");
   try {
     await initDb();
     console.log("[smriti:offscreen] db ready");
     startIndexWorker();
+    
+    // Start vault sync loop if enabled
+    startVaultSyncLoop();
+
     dbReady = true;
     // Notify background that offscreen is ready.
     chrome.runtime.sendMessage({ kind: "offscreen_ready" }).catch(() => {});
-    console.log("[smriti:offscreen] ready");
+    console.log(`[smriti:offscreen] boot complete ms=${Date.now() - t0}`);
   } catch (e) {
     console.error("[smriti:offscreen] boot failed", e);
     chrome.runtime.sendMessage({ kind: "offscreen_error", error: String(e) }).catch(() => {});
@@ -310,6 +324,25 @@ async function handleMessage(
       await flushToOpfs();
       return { ok: true };
     }
+
+    // ─── Vault sync ───────────────────────────────────────────────────────
+    case "vault_status":
+      return getVaultStatus();
+
+    case "vault_enable":
+      return enableVault();
+
+    case "vault_disable":
+      return disableVault();
+
+    case "vault_sync_now":
+      return syncRound();
+
+    case "vault_sync_conversation":
+      return syncConversation(m.conversation_id as string);
+
+    case "vault_resync_all":
+      return resyncAll();
 
     default:
       throw new Error(`unknown offscreen message type: ${String(m.type)}`);

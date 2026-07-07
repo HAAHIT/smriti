@@ -2459,6 +2459,9 @@ function SettingsView({ totals, embed, nav }: {
       {/* Sync */}
       <SyncSection />
 
+      {/* Vault */}
+      <VaultSection />
+
       {/* Export */}
       <Section title="Export">
         <div style={{ color: "var(--muted)", fontSize: 12, marginBottom: 10 }}>
@@ -2725,6 +2728,200 @@ function SyncSection() {
 
       {msg && (
         <div style={{ marginTop: 10, fontSize: 12, color: "var(--ink-2)", fontStyle: "italic" }}>{msg}</div>
+      )}
+    </Section>
+  );
+}
+
+// ─── VaultSection ─────────────────────────────────────────────────────────────
+interface VaultStatus {
+  enabled: boolean;
+  connected: boolean;
+  lastSyncAt: string | null;
+  totalSynced: number;
+  pendingCount: number;
+  errorCount: number;
+}
+
+function VaultStatusCard({ status }: { status: VaultStatus }) {
+  const lastSync = status.lastSyncAt
+    ? relativeTime(status.lastSyncAt)
+    : "never";
+
+  return (
+    <div style={{
+      padding: "12px 16px",
+      background: "var(--surface)",
+      border: "1px solid var(--hairline)",
+      borderRadius: 6,
+      display: "flex",
+      flexDirection: "column",
+      gap: 6,
+    }}>
+      <div style={{
+        display: "flex", alignItems: "center", gap: 8,
+        fontSize: 13, fontWeight: 500,
+      }}>
+        <span style={{
+          width: 8, height: 8, borderRadius: "50%",
+          background: status.connected
+            ? "var(--provider-chatgpt)"  // green
+            : "var(--accent)",           // red
+        }} />
+        {status.connected
+          ? "Connected to Google Drive"
+          : "Drive disconnected — click Sync Now to reconnect"}
+      </div>
+
+      <div className="mono" style={{
+        fontSize: 11, color: "var(--muted)",
+        display: "flex", gap: 16,
+      }}>
+        <span>Last sync: {lastSync}</span>
+        <span>{status.totalSynced} synced</span>
+        {status.pendingCount > 0 && (
+          <span style={{ color: "var(--ink-2)" }}>
+            {status.pendingCount} pending
+          </span>
+        )}
+        {status.errorCount > 0 && (
+          <span style={{ color: "var(--accent)" }}>
+            {status.errorCount} errors
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function VaultSection() {
+  const [status, setStatus] = useState<VaultStatus | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Fetch status on mount and after actions
+  const refreshStatus = useCallback(async () => {
+    try {
+      const r = await sendToHelper({ type: "vault_status" });
+      if (r && typeof r === "object" && "enabled" in r) {
+        setStatus(r as unknown as VaultStatus);
+      }
+    } catch { /* quiet */ }
+  }, []);
+
+  useEffect(() => { void refreshStatus(); }, [refreshStatus]);
+
+  // Poll status every 30s while enabled (to show live sync progress)
+  useEffect(() => {
+    if (!status?.enabled) return;
+    const interval = setInterval(refreshStatus, 30_000);
+    return () => clearInterval(interval);
+  }, [status?.enabled, refreshStatus]);
+
+  const handleEnable = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      await sendToHelper({ type: "vault_enable" });
+      await refreshStatus();
+    } catch (e) {
+      setError(String(e));
+    }
+    setLoading(false);
+  };
+
+  const handleDisable = async () => {
+    if (!confirm(
+      "Disable vault export? Files already on Drive will not be deleted."
+    )) return;
+    setLoading(true);
+    try {
+      await sendToHelper({ type: "vault_disable" });
+      await refreshStatus();
+    } catch (e) {
+      setError(String(e));
+    }
+    setLoading(false);
+  };
+
+  const handleSyncNow = async () => {
+    setSyncing(true);
+    setError(null);
+    try {
+      await sendToHelper({ type: "vault_sync_now" });
+      await refreshStatus();
+    } catch (e) {
+      setError(String(e));
+    }
+    setSyncing(false);
+  };
+
+  /** Shared button style; primary renders an accent fill. */
+  const btn = (primary?: boolean, disabled?: boolean): React.CSSProperties => ({
+    background: primary ? (disabled ? "var(--surface-2)" : "var(--accent)") : "var(--surface)",
+    border: primary ? "none" : "1px solid var(--hairline-strong)",
+    borderRadius: 4, padding: "8px 14px", fontSize: 13,
+    fontFamily: "var(--sans)", fontWeight: primary ? 600 : 500,
+    color: primary ? (disabled ? "var(--muted)" : "#f6f0e3") : "var(--ink)",
+    cursor: disabled ? "default" : "pointer",
+  });
+
+  if (!status && loading) return null; // loading initial
+
+  return (
+    <Section title="Vault — Export to Google Drive">
+      {status?.enabled ? (
+        // ── Enabled state ──
+        <>
+          <VaultStatusCard status={status} />
+
+          <p style={{ fontSize: 13, color: "var(--ink-2)", margin: "12px 0", lineHeight: 1.5 }}>
+            Your conversations are exported as markdown files to a
+            "smriti-vault" folder on your Google Drive.
+            The original data stays local — this is a copy.
+          </p>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+            <button onClick={handleSyncNow} disabled={syncing} style={btn(true, syncing)}>
+              {syncing ? "Syncing…" : "Sync Now"}
+            </button>
+            <button onClick={handleDisable} disabled={loading} style={btn(false, loading)}>
+              Disable Vault
+            </button>
+          </div>
+        </>
+      ) : (
+        // ── Disabled state ──
+        <>
+          <p style={{ fontSize: 13, color: "var(--ink-2)", margin: "0 0 12px", lineHeight: 1.5 }}>
+            Export your conversations as Open Knowledge Format (OKF)
+            markdown files to Google Drive. Compatible with Obsidian,
+            Logseq, and any markdown tool.
+          </p>
+          <p style={{
+            fontSize: 12, color: "var(--muted)",
+            margin: "0 0 16px",
+          }}>
+            Only files created by Smriti are accessible.
+            Your other Drive files are never touched.
+          </p>
+
+          <button onClick={handleEnable} disabled={loading} style={btn(true, loading)}>
+            {loading ? "Connecting…" : "Enable Vault Export"}
+          </button>
+        </>
+      )}
+
+      {error && (
+        <div style={{
+          marginTop: 12, padding: "8px 12px",
+          background: "var(--surface-2)",
+          borderLeft: "3px solid var(--accent)",
+          fontSize: 12, color: "var(--accent)",
+        }}>
+          {error}
+        </div>
       )}
     </Section>
   );

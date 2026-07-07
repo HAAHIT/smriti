@@ -238,4 +238,34 @@ CREATE TABLE sync_config (
 INSERT INTO sync_config (id, enabled) VALUES (1, 0);
 `,
   ],
+  [
+    "005_vault.sql",
+    `
+-- Vault sync state: tracks which conversations have been exported to the
+-- OKF vault (Google Drive), and when. The sync engine uses last_message_at
+-- from conversations to detect changes since last sync.
+CREATE TABLE vault_sync_state (
+  conversation_id  TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+  drive_file_id    TEXT,                -- Google Drive file ID (null if not yet uploaded)
+  filename         TEXT NOT NULL,       -- e.g. "2026-07-01_my-chat.md"
+  vault_path       TEXT NOT NULL,       -- e.g. "threads/claude/"
+  last_synced_at   TEXT NOT NULL,       -- ISO 8601 — when this file was last uploaded
+  synced_msg_count INTEGER NOT NULL,    -- message count at time of last sync
+  status           TEXT NOT NULL DEFAULT 'synced'  -- synced | pending | error
+);
+
+CREATE INDEX idx_vault_status ON vault_sync_state(status);
+
+-- Global vault config (singleton row, like sync_config).
+CREATE TABLE vault_config (
+  id               INTEGER PRIMARY KEY CHECK (id = 1),
+  enabled          INTEGER NOT NULL DEFAULT 0,
+  vault_root_id    TEXT,               -- Drive ID of the "smriti-vault" root folder
+  last_sync_at     TEXT,               -- last successful sync round completion
+  total_synced     INTEGER DEFAULT 0,  -- lifetime count of files synced
+  sync_errors      INTEGER DEFAULT 0   -- count of errors in last round
+);
+INSERT INTO vault_config (id, enabled) VALUES (1, 0);
+`
+  ]
 ];
