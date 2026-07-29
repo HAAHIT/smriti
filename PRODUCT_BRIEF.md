@@ -86,7 +86,7 @@ around — without ever being able to read user data.
 Smriti is a browser extension that runs a four-verb loop. Everything in the
 product is in service of this loop:
 
-```
+```text
    CAPTURE  ─────▶  DISTILL  ─────▶  RECALL  ─────▶  INJECT
  (read your      (extract durable   (find what's    (drop it into
   chats, live     facts about you,   relevant as     the composer,
@@ -151,7 +151,7 @@ These are load-bearing. Changing one of them changes what Smriti *is*.
 
 ## 4. The mental model in one picture
 
-```
+```text
                        YOUR BROWSER (everything below is on-device)
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │                                                                                │
@@ -280,7 +280,7 @@ page.
 
 ### A. Live capture (as you chat)
 
-```
+```text
 You send a message on claude.ai
   → window.fetch is called for the completion endpoint
   → claude-main.content.ts (MAIN) matches the URL, lets the real fetch run,
@@ -310,7 +310,7 @@ exchange is a no-op.
 
 ### B. History import (backfill)
 
-```
+```text
 Onboarding Step 2 / Settings → "Import"
   → sendMessage({ kind: "start_backfill", platform })
   → background → offscreen startBackfill(platform)   (lib/backfill.ts)
@@ -328,7 +328,7 @@ Gemini is capture-only.
 
 ### C. The memory build loop (extract → embed)
 
-```
+```text
 index-worker.ts tick (every ~5s active, ~30s idle):
   1. extractionSweep(): scan user messages past a rowid cursor, run extractCandidates(),
      storeMemory() each surviving fact (dedup along the way)         [no model, cheap]
@@ -343,7 +343,7 @@ onboarding has an instant payoff. See [§7](#7-the-memory-layer-in-depth).
 
 ### D. Recall + inject (the hero)
 
-```
+```text
 You start typing in the host composer
   → sidebar.content.ts watches the composer (debounced ~600ms, min 6 chars)
   → sendToHelper({ type: "recall_memories", query, limit })
@@ -363,7 +363,7 @@ there, not just writes.
 
 ### E. Sync (optional, opt-in)
 
-```
+```text
 sync_now:
   pull encrypted blob from relay (GET /v1/blob/:syncId)
     → decrypt (AES-256-GCM) → ChangesetMemory[]
@@ -377,7 +377,7 @@ See [§11](#11-optional-end-to-end-encrypted-sync).
 
 ### F. Vault export (optional, opt-in)
 
-```
+```text
 vault sync round (every ~5 min busy / ~30 min idle, or on demand):
   SELECT conversations never synced OR changed since last sync OR status='error'
     → for each (batch of 10):
@@ -700,7 +700,14 @@ treats `403 rateLimitExceeded` as a hard stop for the round. If a file recorded 
 embeddings, and memories live only in OPFS inside the offscreen document. No
 account, no server, no telemetry.
 
-**The only three times bytes leave the device — each opt-in:**
+**Scope of that claim.** This is about the data Smriti holds — your conversations,
+messages, embeddings, and memories. It is not a claim that the browser sends no
+network traffic: you are on claude.ai, the page itself is talking to its own
+servers, and enabling vault export involves a Google OAuth exchange. The
+guarantee is that *Smriti* does not transmit your archive anywhere except in the
+three cases below.
+
+**The only three times Smriti sends your data off the device — each opt-in:**
 1. **History import** issues requests to **claude.ai / chatgpt.com themselves**
    (using *your* session cookies), exactly as your browser would — not to any
    Smriti server. It's read-only.
@@ -749,7 +756,7 @@ account, no server, no telemetry.
 
 ## 15. Repository map
 
-```
+```text
 packages/
   shared/      @smriti/shared — TypeScript types + the message/protocol contract.
                src/types.ts (MemoryItem, CaptureEvent, …), src/protocol.ts

@@ -39,7 +39,7 @@ ciphertext the relay can't read), or **vault export**, which writes conversation
 transcripts as plaintext markdown to the user's own Google Drive. The embedding
 model is vendored at build time, so there is no runtime model download.
 
-```
+```text
 packages/
   shared/      Types + protocol (@smriti/shared).
   extension/   The product (WXT, Chrome MV3 — Chrome only; the engine needs
@@ -105,7 +105,7 @@ The loop: sidebar watches the host composer as you type → `recall_memories` RP
 
 ## Build / test / run
 
-```
+```bash
 npm install
 cd packages/extension
 npm run fetch:model      # vendor embedding model + ONNX wasm (~25 MB, one-time;

@@ -1,10 +1,17 @@
 # Vault export — OKF markdown to Google Drive
 
 > **Status: implemented, not yet runnable.** The code landed in commit `5863955`
-> (2026-07-07) but has never been exercised end to end. It needs a real Google
-> OAuth client ID, a manifest CSP change, and three defect fixes before it will
-> work. This document is the complete picture: what it does, how it is built, what
-> is broken, and exactly what to do to bring it up.
+> (2026-07-07) but has never been exercised end to end. Nine issues are catalogued
+> in [§5](#5-known-defects): two are hard blockers on it running at all
+> ([V1](#v1-blocker--csp-blocks-every-google-api-call) CSP,
+> [V2](#v2-blocker--the-oauth-client-id-is-a-placeholder) OAuth client ID), three
+> are engine defects that cause silent wrong behaviour once it does run
+> ([V3](#v3--manual-sync-now-silently-does-nothing-while-the-loop-is-running),
+> [V4](#v4--vault-sync-stops-permanently-after-the-offscreen-document-restarts),
+> [V6](#v6--resyncall-duplicates-every-file-on-drive)), and the rest are a failing
+> test, a robustness gap, a stale comment, and the typecheck error. This document
+> is the complete picture: what it does, how it is built, what is broken, and
+> exactly what to do to bring it up.
 
 Companion to [PRODUCT_BRIEF.md §12](../PRODUCT_BRIEF.md#12-vault-export--okf-markdown-to-google-drive).
 
@@ -102,7 +109,7 @@ Rules the renderer implements:
 - **`tool` messages** are wrapped in a ```json fence unless already fenced.
 - **YAML safety**: a title containing `:` `#` `[` `]` `{` `}` `"` or a leading `*`
   is double-quoted with internal `"` escaped. Timestamps and URLs are always
-  quoted. (See [defect V5](#v5-okf-null-title-test-fails) — the "no special
+  quoted. (See [defect V5](#v5--okf-null-title-test-fails) — the "no special
   characters" branch currently emits an unquoted title, which the test disagrees
   with.)
 - **`model`** is taken from the first message in the conversation with a non-null
@@ -185,7 +192,7 @@ A `404` on update (file deleted on Drive) falls back to a fresh upload.
 
 All of the following were verified by reading the code on `main` at `5863955`,
 and where noted, reproduced by running it. None have been observed against a live
-Google account, because the feature cannot currently authenticate ([V1](#v1-blocker-csp-blocks-every-google-api-call)).
+Google account, because the feature cannot currently authenticate ([V1](#v1-blocker--csp-blocks-every-google-api-call)).
 
 ### V1 (blocker) — CSP blocks every Google API call
 
@@ -193,7 +200,7 @@ Google account, because the feature cannot currently authenticate ([V1](#v1-bloc
 `https://www.googleapis.com/*` in `host_permissions`, but the
 `content_security_policy.extension_pages` directive is:
 
-```
+```text
 connect-src 'self' https://smriti-sync-relay.YOUR-SUBDOMAIN.workers.dev
 ```
 
@@ -275,7 +282,7 @@ token in RAM".
 
 `npm run test:okf` fails on the null-title case:
 
-```
+```text
 expected: title: "Untitled conversation"
 actual:   title: Untitled conversation
 ```
@@ -327,7 +334,7 @@ comment describes SQL-style doubling. Fix the comment, not the code.
 Not vault-specific in spirit but it lives here and it breaks `tsc` for the whole
 package:
 
-```
+```text
 lib/vault-sync.ts(256,33): error TS2352: Conversion of type '{ id: string; platform: string;
 platform_conv_id: string; … }' to type 'ConversationMeta' may be a mistake …
 Property 'message_count' is missing
@@ -371,7 +378,7 @@ extension's ID is derived from a key, so pin it first.
    supply the extension ID from step 1.
 6. **Put the client ID in `wxt.config.ts`**, replacing
    `YOUR_CLIENT_ID.apps.googleusercontent.com`.
-7. **Apply the CSP fix from [V1](#v1-blocker-csp-blocks-every-google-api-call)** in
+7. **Apply the CSP fix from [V1](#v1-blocker--csp-blocks-every-google-api-call)** in
    the same file.
 8. Rebuild, reload unpacked, then Settings → **Vault — Export to Google Drive** →
    *Enable Vault Export*.
@@ -386,7 +393,7 @@ product's own privacy claims.
 Watch the offscreen console (`chrome://extensions` → Smriti → *Inspect views:
 offscreen.html*) for `[smriti:vault]` lines:
 
-```
+```text
 [smriti:vault] sync loop started
 [smriti:vault] round: synced=10 errors=0 apiCalls=13 ms=4211
 ```
@@ -401,16 +408,16 @@ nothing.
 
 ## 7. Before this ships
 
-- [ ] Fix [V1](#v1-blocker-csp-blocks-every-google-api-call) (CSP) and
+- [ ] Fix [V1](#v1-blocker--csp-blocks-every-google-api-call) (CSP) and
       [V2](#v2-blocker--the-oauth-client-id-is-a-placeholder) (client ID) — without
       both, nothing runs.
 - [ ] Fix [V9](#v9--the-typecheck-error) so `tsc --noEmit` is clean again.
 - [ ] Fix [V3](#v3--manual-sync-now-silently-does-nothing-while-the-loop-is-running)
       and [V4](#v4--vault-sync-stops-permanently-after-the-offscreen-document-restarts)
       — both are silent failures, the worst kind for a background sync.
-- [ ] Resolve [V5](#v5-okf-null-title-test-fails) so `npm run test:okf` passes.
-- [ ] Fix [V6](#v6-resyncall-duplicates-every-file-on-drive) / add
-      [V7](#v7-filename-collisions-are-unhandled) before anyone runs a resync
+- [ ] Resolve [V5](#v5--okf-null-title-test-fails) so `npm run test:okf` passes.
+- [ ] Fix [V6](#v6--resyncall-duplicates-every-file-on-drive) / add
+      [V7](#v7--filename-collisions-are-unhandled) before anyone runs a resync
       against a real Drive.
 - [ ] **Update the privacy story.** `PRIVACY_POLICY.md`, `STORE_LISTING.md`,
       `docs/privacy.html`, and `docs/index.html` all currently state that nothing

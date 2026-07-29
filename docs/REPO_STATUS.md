@@ -52,7 +52,7 @@ Stale remote branches still present: `release/t1-t10`, `feature/e2e-sync`,
 
 ### B1 — `main` does not typecheck
 
-```
+```text
 lib/vault-sync.ts(256,33): error TS2352: Conversion of type
 '{ id: string; platform: string; platform_conv_id: string; title: string | null;
    url: string | null; started_at: string; last_message_at: string; }'
@@ -82,7 +82,7 @@ All five `test:*` scripts in `packages/extension/package.json` invoke `tsx`:
 `workspaces` array, so neither is ever installed. On a clean
 `npm install`, every test script fails with:
 
-```
+```text
 'tsx' is not recognized as an internal or external command
 ```
 
@@ -90,12 +90,14 @@ All five `test:*` scripts in `packages/extension/package.json` invoke `tsx`:
 `packages/extension/package.json` (or the root). Workaround until then:
 `npx --yes tsx scripts/<name>.ts`.
 
-This also means CI, if it exists, has never actually executed these suites — which
-is how B3 and B4 went unnoticed.
+Nothing runs these suites automatically: there is no `.github/workflows`
+directory, and the two checks configured on pull requests (`pre-commit.ci` and
+CodeRabbit) do neither a typecheck nor a test run. So B1, B3, and B4 could reach
+`main` without anything objecting.
 
 ### B3 — `test:okf` fails
 
-```
+```text
 expected: title: "Untitled conversation"
 actual:   title: Untitled conversation
 ```
@@ -103,7 +105,7 @@ actual:   title: Untitled conversation
 `yamlQuote()` only quotes titles containing `: # [ ] { } "` or a leading `*`.
 Bare is valid YAML, so the renderer is defensible and the test is the stricter
 party — but they disagree, so the suite is red. Quoting all titles is the cleaner
-resolution. Detail: [VAULT_SYNC.md V5](VAULT_SYNC.md#v5-okf-null-title-test-fails).
+resolution. Detail: [VAULT_SYNC.md V5](VAULT_SYNC.md#v5--okf-null-title-test-fails).
 
 > Note: node's assertion output names the wrong line (`## Assistant`) because
 > `tsx` source-mapping offsets it. The actual failure is the null-title case.
@@ -125,9 +127,11 @@ and expect `""` for unparseable dates.
 
 ### B5 — vault export cannot run at all
 
-Placeholder OAuth client ID, plus a CSP that blocks every `googleapis.com`
-request, plus three engine defects. Fully documented in
-[VAULT_SYNC.md](VAULT_SYNC.md).
+Nine issues are catalogued in [VAULT_SYNC.md §5](VAULT_SYNC.md#5-known-defects).
+Two are hard blockers on it running at all — a placeholder OAuth client ID, and a
+CSP that blocks every `googleapis.com` request. Three more are engine defects that
+produce silent wrong behaviour once it does run. The rest are a failing test, a
+robustness gap, a stale comment, and B1.
 
 ### B6 — sync relay is still undeployed
 
