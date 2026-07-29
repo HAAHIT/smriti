@@ -75,7 +75,7 @@ async function boot(): Promise<void> {
     await initDb();
     console.log("[smriti:offscreen] db ready");
     startIndexWorker();
-    
+
     // Start vault sync loop if enabled
     startVaultSyncLoop();
 

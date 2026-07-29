@@ -62,12 +62,12 @@ export async function getAuthToken(interactive = false): Promise<string> {
 export async function revokeAuthToken(): Promise<void> {
   if (_cachedToken) {
     await chrome.identity.removeCachedAuthToken({ token: _cachedToken });
-    
+
     // Also revoke token on Google's end
     try {
       await fetch(`https://accounts.google.com/o/oauth2/revoke?token=${_cachedToken}`);
     } catch { /* best effort */ }
-    
+
     _cachedToken = null;
     _tokenExpiry = 0;
   }
@@ -118,7 +118,7 @@ export async function ensureFolder(vaultPath: string): Promise<string> {
 
   // Split path into segments (e.g. "threads/claude" -> ["threads", "claude"])
   const segments = vaultPath.split("/").filter(Boolean);
-  
+
   // First ensure root folder exists
   let currentParentId = getCachedFolderId("root");
   if (!currentParentId) {
@@ -134,7 +134,7 @@ export async function ensureFolder(vaultPath: string): Promise<string> {
   let currentPath = "";
   for (const segment of segments) {
     currentPath = currentPath ? `${currentPath}/${segment}` : segment;
-    
+
     const segmentCachedId = getCachedFolderId(currentPath);
     if (segmentCachedId) {
       currentParentId = segmentCachedId;
@@ -160,7 +160,7 @@ async function findOrCreateFolder(name: string, parentId: string): Promise<strin
   // Double single quotes to escape single quotes in name (Google Drive API escaping)
   const escapedName = name.replace(/'/g, "\\'");
   const q = `name='${escapedName}' and ${parentClause} and mimeType='application/vnd.google-apps.folder' and trashed=false`;
-  
+
   const searchRes = await fetchWithRetry(
     `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id)`,
     { headers: { Authorization: `Bearer ${token}` } },
@@ -197,13 +197,13 @@ export async function findFile(parentFolderId: string, filename: string): Promis
   const token = await getAuthToken();
   const escapedName = filename.replace(/'/g, "\\'");
   const q = `name='${escapedName}' and '${parentFolderId}' in parents and trashed=false`;
-  
+
   const res = await fetchWithRetry(
     `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id)`,
     { headers: { Authorization: `Bearer ${token}` } },
   );
   const json = await res.json();
-  
+
   if (json.files?.length > 0) {
     return json.files[0].id;
   }
@@ -256,7 +256,7 @@ export async function updateFile(
   mimeType = "text/markdown"
 ): Promise<DriveFileResult> {
   const token = await getAuthToken();
-  
+
   // Use simple upload for update if just updating content
   const res = await fetchWithRetry(
     `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media&fields=id,name,webViewLink`,
@@ -286,7 +286,7 @@ async function fetchWithRetry(
   maxRetries = 3,
 ): Promise<Response> {
   let lastError: Error | null = null;
-  
+
   if (_apiCallsThisRound >= MAX_CALLS_PER_ROUND) {
     throw new DriveApiError(
       `Exceeded max API calls per round (${MAX_CALLS_PER_ROUND}). Aborting to protect quota.`,
@@ -309,7 +309,7 @@ async function fetchWithRetry(
         }
         _cachedToken = null;
         _tokenExpiry = 0;
-        
+
         // Try silent refresh
         try {
           const newToken = await getAuthToken(false);

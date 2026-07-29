@@ -143,6 +143,17 @@ replaced. Procedure: [`packages/sync-relay/README.md`](../packages/sync-relay/RE
 - **PR #4 is still open** and has been superseded: its `PRODUCT_BRIEF.md` is now on
   `main`, updated for the vault work it predates. Close the PR (or hard-reset the
   branch onto `main`) rather than merging it, or you will get a conflict.
+- **The `pre-commit.ci` GitHub App is installed but had no config.** Every PR
+  raised after it was enabled failed with `.pre-commit-config.yaml is not a file`
+  — the file existed on no branch, including `main`. (PRs #4 and #6 predate the
+  app and only ran CodeRabbit, which is why this surfaced now.) A minimal config
+  now exists at the repo root: whitespace/EOF hygiene plus non-mutating integrity
+  checks, with generated artifacts excluded. It found trailing whitespace in the
+  four files added by the vault commit and missing final newlines in the six
+  added by the sidebar refactor. **No JS/TS linter or formatter is wired into it**
+  — the repo has no eslint/prettier config, and the real gate remains the
+  `tsc --noEmit` + `test:*` loop, which needs a full install and doesn't belong in
+  a hook.
 - **Root `package.json` has a self-referential dependency**:
   `"dependencies": { "smriti": "file:" }`. Almost certainly accidental; harmless
   today, but it makes the root package depend on itself and is worth removing.
