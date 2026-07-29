@@ -1,0 +1,41 @@
+# pre-commit configuration.
+#
+# The pre-commit.ci GitHub App runs `pre-commit run --all-files` on every pull
+# request, and fails the check if this file is missing — which is what it was
+# doing before this config landed.
+#
+# Scope is deliberately narrow: whitespace/EOF hygiene and file-integrity
+# checks. JS/TS linting and formatting are NOT wired up here. The repo has no
+# eslint/prettier configuration, and the real quality gate is the verification
+# loop documented in CLAUDE.md (`tsc --noEmit` plus the `test:*` suites), which
+# needs a full workspace install and therefore does not belong in a pre-commit
+# hook. Adding a formatter later is a deliberate decision, not a drive-by.
+#
+# Run locally with:  pre-commit run --all-files
+
+# Generated, vendored, or binary artifacts that hooks must not rewrite.
+exclude: |
+  (?x)^(
+    package-lock\.json|
+    packages/extension/stats\.html|
+    docs/screenshots/.*
+  )$
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      # Whitespace hygiene.
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+
+      # Integrity checks — these only report, they never rewrite.
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: check-added-large-files
+      - id: check-json
+      - id: check-toml
+
+ci:
+  autofix_prs: true
+  autoupdate_schedule: monthly

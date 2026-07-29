@@ -105,13 +105,13 @@ function markSyncError(conversationId: string): void {
 
 export async function getVaultStatus(): Promise<VaultStatus> {
   const config = getVaultConfig();
-  
+
   const pendingCount = (dbGet<{ n: number }>(`
     SELECT COUNT(*) AS n FROM conversations c
     LEFT JOIN vault_sync_state v ON v.conversation_id = c.id
     WHERE v.conversation_id IS NULL OR c.last_message_at > v.last_synced_at
   `) ?? { n: 0 }).n;
-  
+
   const errorCount = (dbGet<{ n: number }>("SELECT COUNT(*) AS n FROM vault_sync_state WHERE status = 'error'") ?? { n: 0 }).n;
 
   return {
@@ -128,18 +128,18 @@ export async function enableVault(): Promise<{ ok: true }> {
   try {
     // Get token interactively
     await getAuthToken(true);
-    
+
     // Ensure root folder is created and cache is initialized
     await loadPathCache();
     const rootId = await ensureFolder("root");
     await persistPathCache();
-    
+
     updateVaultConfig({ enabled: 1, vault_root_id: rootId });
-    
+
     // Kick off first sync immediately, but don't await it
     setTimeout(() => { void syncRound(); }, 1000);
     startVaultSyncLoop();
-    
+
     return { ok: true };
   } catch (e) {
     console.error("[smriti:vault] failed to enable vault", e);
@@ -216,7 +216,7 @@ export async function syncRound(): Promise<VaultSyncResult> {
 
   const t0 = Date.now();
   let synced = 0, skipped = 0, errors = 0;
-  
+
   resetApiCallCount();
 
   // Load Drive path cache from storage
@@ -251,7 +251,7 @@ export async function syncRound(): Promise<VaultSyncResult> {
       // Loop was disabled
       break;
     }
-    
+
     try {
       await syncOneConversation(conv as ConversationMeta);
       synced++;
@@ -260,7 +260,7 @@ export async function syncRound(): Promise<VaultSyncResult> {
         console.warn("[smriti:vault] aborting sync round early due to API quota", String(e));
         break; // Stop this round and try again next tick
       }
-      
+
       console.error(`[smriti:vault] failed to sync ${conv.id}`, String(e));
       markSyncError(conv.id);
       errors++;
@@ -303,7 +303,7 @@ export async function syncConversation(conversationId: string): Promise<VaultSyn
   const t0 = Date.now();
   resetApiCallCount();
   await loadPathCache();
-  
+
   try {
     await syncOneConversation(conv);
     await persistPathCache();
@@ -363,7 +363,7 @@ async function syncOneConversation(conv: ConversationMeta): Promise<void> {
     started_at: conv.started_at,
     last_message_at: conv.last_message_at,
   };
-  
+
   const okf = renderOkf(okfMeta, messages, memories, modelRow?.model);
 
   // 5. Ensure target folder exists on Drive

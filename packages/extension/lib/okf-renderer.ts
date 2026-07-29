@@ -83,16 +83,16 @@ export function generateFilename(meta: OkfConversationMeta): string {
 
 export function extractTags(messages: OkfMessage[]): string[] {
   const wordCounts = new Map<string, number>();
-  
+
   for (const msg of messages) {
     if (msg.role !== 'user') continue;
-    
+
     // Split into words, removing punctuation
     const words = msg.content_text
       .toLowerCase()
       .replace(/[^a-z0-9\s]/g, '')
       .split(/\s+/);
-      
+
     for (const word of words) {
       if (word.length >= 3 && !STOP_WORDS.has(word)) {
         wordCounts.set(word, (wordCounts.get(word) ?? 0) + 1);
@@ -105,7 +105,7 @@ export function extractTags(messages: OkfMessage[]): string[] {
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5)
     .map(entry => entry[0]);
-    
+
   return sorted;
 }
 
@@ -157,14 +157,14 @@ export function renderBody(messages: OkfMessage[]): string {
       parts.push(`## ${role}`);
       lastRole = msg.role;
     }
-    
+
     // For tool messages, we wrap the content in a code block if it isn't already
     if (msg.role === 'tool' && !msg.content_text.startsWith('```')) {
       parts.push(`\`\`\`json\n${msg.content_text.trim()}\n\`\`\``);
     } else {
       parts.push(msg.content_text.trim());
     }
-    
+
     parts.push(''); // blank line separator
   }
 
@@ -178,18 +178,18 @@ export function renderBody(messages: OkfMessage[]): string {
 
 export function renderMemoriesFooter(memories: OkfRelatedMemory[]): string {
   if (!memories || memories.length === 0) return '';
-  
+
   const parts = [
     '---',
     '',
     '## Related Memories',
     ''
   ];
-  
+
   for (const mem of memories) {
     parts.push(`- ${mem.text} (*${mem.kind}*)`);
   }
-  
+
   return parts.join('\n');
 }
 
@@ -202,17 +202,17 @@ export function renderOkf(
   const extractedTags = extractTags(messages);
   const frontmatter = renderFrontmatter(meta, messages, extractedTags, model);
   const body = renderBody(messages);
-  
+
   let markdown = `${frontmatter}\n\n${body}`;
-  
+
   if (memories && memories.length > 0) {
     const footer = renderMemoriesFooter(memories);
     markdown += `\n\n${footer}`;
   }
-  
+
   // Ensure the markdown ends with a single newline
   markdown = markdown.trim() + '\n';
-  
+
   return {
     markdown,
     filename: generateFilename(meta),

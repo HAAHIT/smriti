@@ -10,6 +10,17 @@ you inject that context into any AI prompt in one click — so every tool
 Positioning: **"Your AI remembers you."** (Not "search your old chats" — that's a
 feature, memory is the product.) Goal: fundable startup / YC.
 
+### Where to read more
+
+- **[`PRODUCT_BRIEF.md`](PRODUCT_BRIEF.md)** — the full product & engineering
+  brief. Read this first if you're new to the codebase.
+- **[`docs/REPO_STATUS.md`](docs/REPO_STATUS.md)** — verified build health right
+  now: what compiles, what tests pass, what's blocked. **`main` is currently
+  red — read this before starting work.**
+- **[`docs/VAULT_SYNC.md`](docs/VAULT_SYNC.md)** — the vault export subsystem
+  (OKF markdown → Google Drive), its setup procedure, and its known defects.
+- **[`RELEASE_PLAN.md`](RELEASE_PLAN.md)** — the executable pre-release PRD.
+
 ### Strategic decisions (locked)
 
 - **Direction:** memory layer, not just search/archive.
@@ -21,15 +32,18 @@ feature, memory is the product.) Goal: fundable startup / YC.
 
 ## Architecture (local-first browser extension + optional relay)
 
-WXT + React. Core memory features run entirely in-browser; nothing leaves the
-device (after the one-time ~25 MB embedding-model download) unless the user opts
-into sync, which uploads only end-to-end-encrypted memory blobs to the
-zero-knowledge relay (opaque ciphertext the relay can't read).
+WXT + React. Core memory features run entirely in-browser. Nothing leaves the
+device unless the user opts into one of two features: **sync**, which uploads
+only end-to-end-encrypted memory blobs to the zero-knowledge relay (opaque
+ciphertext the relay can't read), or **vault export**, which writes conversation
+transcripts as plaintext markdown to the user's own Google Drive. The embedding
+model is vendored at build time, so there is no runtime model download.
 
-```
+```text
 packages/
   shared/      Types + protocol (@smriti/shared).
-  extension/   The product (WXT, Chrome/Firefox MV3)
+  extension/   The product (WXT, Chrome MV3 — Chrome only; the engine needs
+               Offscreen Documents, which Firefox lacks)
   helper/      LEGACY Node service — superseded by the offscreen doc. Ignore.
   mcp-server/  LEGACY MCP server. Ignore for now (could return as a B2B/dev surface).
   sync-relay/  Cloudflare Worker + KV — zero-knowledge encrypted-blob relay for
@@ -48,7 +62,12 @@ Extension internals:
 - `lib/search.ts` — hybrid FTS5 + vector RRF search over messages.
 - `lib/outline.ts` — embedding-based conversation chaptering (no LLM).
 - `entrypoints/sidebar.content.ts` — in-page panel (shadow DOM). The HERO surface.
+  Rendering/state/styles/helpers live in `lib/sidebar-{types,styles,helpers,renderers}.ts`
+  — the helpers and renderers are pure and have their own test suites.
 - `entrypoints/options/main.tsx` — the desktop archive viewer + Memory view.
+- `lib/vault-sync.ts` + `lib/okf-renderer.ts` + `lib/drive-client.ts` — optional
+  vault export: conversations → OKF markdown → the user's Google Drive.
+  **Not currently runnable** — see `docs/VAULT_SYNC.md`.
 
 ## The memory layer (this is the differentiator)
 
@@ -78,25 +97,49 @@ The loop: sidebar watches the host composer as you type → `recall_memories` RP
   they pull sql.js/transformers, which belong to the offscreen doc only).
 - New offscreen RPCs: add a `case` in `lib/offscreen-main.ts`; UI calls them via
   `sendToHelper({ type, ... })` (loose `AnyResp`, read fields off the result).
+- Reaching a **new external origin** needs the host added to *both*
+  `host_permissions` **and** the `connect-src` CSP in `wxt.config.ts` — the
+  offscreen doc is an extension page, so CSP governs its `fetch()`.
+- Schema changes: append a new migration tuple to `SCHEMA` in `lib/migrations.ts`
+  (currently `001_init` … `005_vault`). Never edit a shipped migration.
 
 ## Build / test / run
 
-```
+```bash
 npm install
 cd packages/extension
 npm run fetch:model      # vendor embedding model + ONNX wasm (~25 MB, one-time;
                           # also runs automatically before build/dev)
-npm run test:extract     # extraction quality assertions
 npx tsc --noEmit -p tsconfig.json
+npm run test:extract             # extraction quality assertions
+npm run test:sync                # sync crypto + merge decider
+npm run test:sidebar-helpers     # pure sidebar helpers
+npm run test:sidebar-renderers   # pure sidebar renderers
+npm run test:okf                 # OKF markdown renderer
 npm run build            # → .output/chrome-mv3  (load unpacked in chrome://extensions)
 npm run dev              # live dev
 ```
+
+⚠️ On a fresh clone the `test:*` scripts fail with `'tsx' is not recognized` —
+`tsx` isn't declared in any installed workspace. Until that's fixed, run them as
+`npx --yes tsx scripts/<name>.ts`. See `docs/REPO_STATUS.md`.
 
 ## Known gaps / next steps
 
 **`RELEASE_PLAN.md` is the executable pre-release PRD (tasks T1–T11 with
 anchors, snippets, and acceptance criteria) — work from it, in order.**
-- Onboarding copy still search-centric; reframe to memory.
+`docs/REPO_STATUS.md` has the current, verified state and a suggested work order.
+
+**Red right now — fix these first:**
+- `main` does not typecheck: one TS2352 in `lib/vault-sync.ts` (`ConversationMeta`
+  has `message_count` but not `platform_conv_id`; a raw row is the reverse).
+- `tsx` is undeclared, so no `test:*` script runs from a fresh clone.
+- `test:okf` and `test:sidebar-helpers` fail when run manually (the sidebar-helper
+  failures are stale assertions, not product bugs).
+- Vault export can't authenticate: placeholder OAuth client ID + a CSP that blocks
+  `googleapis.com`, plus three engine defects. See `docs/VAULT_SYNC.md`.
+
+**Standing gaps:**
 - Injection selectors need live tuning per platform (sites change often).
 - BYOK LLM extraction (optional) would lift memory quality above heuristics.
 - Optional E2E-encrypted sync (the fundability piece) is built (memories only):
@@ -105,7 +148,10 @@ anchors, snippets, and acceptance criteria) — work from it, in order.**
   and `packages/sync-relay`. Remaining manual step: `wrangler deploy` the relay,
   then swap the `smriti-sync-relay.YOUR-SUBDOMAIN.workers.dev` placeholder in
   `lib/sync.ts` + `wxt.config.ts` (×2). See `packages/sync-relay/README.md`.
-- Not yet shipped to Chrome Web Store (`STORE_LISTING.md` has placeholders).
+- Privacy copy (`PRIVACY_POLICY.md`, `STORE_LISTING.md`, `docs/privacy.html`,
+  `docs/index.html`) predates vault export and still claims nothing leaves the
+  device. Must be corrected before store submission.
+- Not yet shipped to Chrome Web Store.
 
 ## Conventions
 
