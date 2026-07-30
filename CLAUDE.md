@@ -108,8 +108,8 @@ The loop: sidebar watches the host composer as you type → `recall_memories` RP
 ```bash
 npm install
 cd packages/extension
-npm run fetch:model      # vendor embedding model + ONNX wasm (~25 MB, one-time;
-                          # also runs automatically before build/dev)
+npm run vendor:assets    # embedding model + ONNX wasm (~25 MB) and webfonts;
+                          # also runs automatically before build/dev/zip
 npx tsc --noEmit -p tsconfig.json
 npm run test:extract             # extraction quality assertions
 npm run test:sync                # sync crypto + merge decider
@@ -120,9 +120,15 @@ npm run build            # → .output/chrome-mv3  (load unpacked in chrome://ex
 npm run dev              # live dev
 ```
 
-⚠️ On a fresh clone the `test:*` scripts fail with `'tsx' is not recognized` —
-`tsx` isn't declared in any installed workspace. Until that's fixed, run them as
-`npx --yes tsx scripts/<name>.ts`. See `docs/REPO_STATUS.md`.
+`.github/workflows/ci.yml` runs the typecheck plus all five suites on every PR
+and on pushes to `main`. It deliberately does not run `npm run build`: the
+prebuild hook fetches the ~25 MB model, and `wxt build` uses Vite, which
+transpiles without typechecking — so a green build proves less than the job does.
+
+**No runtime network requests.** Both the embedding model and the webfonts are
+vendored into `public/` at build time (`scripts/fetch-model.mjs`,
+`scripts/fetch-fonts.mjs`; both gitignored outputs). If you add an asset, vendor
+it — don't reach for a CDN, or the privacy claim stops being true.
 
 ## Known gaps / next steps
 
@@ -130,28 +136,34 @@ npm run dev              # live dev
 anchors, snippets, and acceptance criteria) — work from it, in order.**
 `docs/REPO_STATUS.md` has the current, verified state and a suggested work order.
 
-**Red right now — fix these first:**
-- `main` does not typecheck: one TS2352 in `lib/vault-sync.ts` (`ConversationMeta`
-  has `message_count` but not `platform_conv_id`; a raw row is the reverse).
-- `tsx` is undeclared, so no `test:*` script runs from a fresh clone.
-- `test:okf` and `test:sidebar-helpers` fail when run manually (the sidebar-helper
-  failures are stale assertions, not product bugs).
-- Vault export can't authenticate: placeholder OAuth client ID + a CSP that blocks
-  `googleapis.com`, plus three engine defects. See `docs/VAULT_SYNC.md`.
+**Green as of the Phase 0 unblock:** `tsc --noEmit` is clean, all five suites pass
+(210 assertions), and CI enforces both. The next work is the per-app memory
+layers / cross-app search refactor — Phase 1 is the Source layer (open the
+`Platform` union into a registry, build the connector SDK, migration 006).
+
+**Frozen, not fixed — `lib/features.ts`:**
+- **Sync** (`FEATURES.SYNC = false`) needs the relay deployed and the
+  `smriti-sync-relay.YOUR-SUBDOMAIN.workers.dev` placeholder replaced in
+  `lib/sync.ts` + `wxt.config.ts` (×2).
+- **Vault** (`FEATURES.VAULT = false`) needs a real OAuth client ID,
+  `googleapis.com` added to the `connect-src` CSP, and three engine defects
+  fixed. See `docs/VAULT_SYNC.md`.
+
+Both engines are dormant at runtime while their config row says disabled (the
+default), so the flags only withhold UI. Flip a flag back in the same commit that
+clears its blocker.
 
 **Standing gaps:**
 - Injection selectors need live tuning per platform (sites change often).
 - BYOK LLM extraction (optional) would lift memory quality above heuristics.
-- Optional E2E-encrypted sync (the fundability piece) is built (memories only):
-  `lib/sync-crypto.ts` (HKDF + AES-256-GCM), `lib/sync.ts` (whole-state merge),
-  `lib/sync-merge.ts` (pure decider, `npm run test:sync`), Settings → Sync UI,
-  and `packages/sync-relay`. Remaining manual step: `wrangler deploy` the relay,
-  then swap the `smriti-sync-relay.YOUR-SUBDOMAIN.workers.dev` placeholder in
-  `lib/sync.ts` + `wxt.config.ts` (×2). See `packages/sync-relay/README.md`.
 - Privacy copy (`PRIVACY_POLICY.md`, `STORE_LISTING.md`, `docs/privacy.html`,
-  `docs/index.html`) predates vault export and still claims nothing leaves the
-  device. Must be corrected before store submission.
+  `docs/index.html`) asserts that nothing leaves the device. That is now true of a
+  default build — vault export is behind `FEATURES.VAULT`, and the webfonts that
+  used to be fetched from Google on every page load are vendored. It stops being
+  true the moment vault is unfrozen, so revise the copy in that same change.
 - Not yet shipped to Chrome Web Store.
+- `PRODUCT_BRIEF.md` §6's "no LLM" principle is superseded by the opt-in BYOK
+  decision and needs revising.
 
 ## Conventions
 

@@ -44,6 +44,21 @@ export default defineConfig({
       "48":  "icons/icon-48.png",
       "128": "icons/icon-128.png",
     },
+    // The sidebar registers its vendored @font-face rules by adding a <link> to
+    // the host page's document.head (Chrome ignores @font-face inside a shadow
+    // tree), so the stylesheet and the .woff2 files it references are loaded from
+    // page context and must be web-accessible. Keep `matches` aligned with the
+    // sidebar content script's own matches in entrypoints/sidebar.content.ts.
+    web_accessible_resources: [
+      {
+        resources: ["fonts/*"],
+        matches: [
+          "https://claude.ai/*",
+          "https://chatgpt.com/*",
+          "https://gemini.google.com/*",
+        ],
+      },
+    ],
     content_security_policy: {
       // connect-src allows the offscreen doc to reach the sync relay. Replace
       // the placeholder host after `wrangler deploy`.

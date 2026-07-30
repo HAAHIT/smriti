@@ -5,10 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "wxt",
-    "predev": "node scripts/fetch-model.mjs",
+    "predev": "npm run vendor:assets",
     "build": "wxt build",
-    "prebuild": "node scripts/fetch-model.mjs",
-    "prezip": "node scripts/fetch-model.mjs",
+    "prebuild": "npm run vendor:assets",
+    "prezip": "npm run vendor:assets",
+    "vendor:assets": "node scripts/fetch-model.mjs && node scripts/fetch-fonts.mjs",
     "zip": "wxt zip",
     "test:extract": "tsx scripts/test-extract.ts",
     "test:sync": "tsx scripts/test-sync.ts",
@@ -16,6 +17,7 @@
     "test:sidebar-renderers": "tsx scripts/test-sidebar-renderers.ts",
     "test:okf": "tsx scripts/test-okf-renderer.ts",
     "fetch:model": "node scripts/fetch-model.mjs",
+    "fetch:fonts": "node scripts/fetch-fonts.mjs",
     "postinstall": "wxt prepare"
   },
   "dependencies": {
@@ -33,6 +35,7 @@
     "@vitejs/plugin-react": "^5.1.1",
     "@wxt-dev/module-react": "^1.1.3",
     "pngjs": "^7.0.0",
+    "tsx": "^4.19.2",
     "wxt": "^0.19.13"
   }
 }

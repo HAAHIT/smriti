@@ -1,7 +1,7 @@
 # Repo status — verified snapshot
 
-**As of:** 2026-07-29 · **Branch:** `main` · **HEAD:** `5863955` ·
-**Sync with `origin/main`:** up to date (0 ahead / 0 behind), working tree clean.
+**As of:** 2026-07-30 · **Branch:** `chore/phase-0-unblock` · **Base:** `d5fbce0` ·
+working tree clean.
 
 This is a point-in-time health report produced by actually running the checks on a
 fresh clone, not a summary of intent. For how the system is *designed*, see
@@ -12,21 +12,45 @@ fresh clone, not a summary of intent. For how the system is *designed*, see
 
 ## 1. Headline
 
-The product is feature-complete for its stated v0.1 scope — capture, import,
-extraction, hybrid recall, one-click injection, E2E sync, and now vault export are
-all implemented and merged. **But `main` is not currently green.** The most recent
-commit introduced a type error, and the test suite cannot be run at all from a
-fresh clone because its runner is not a declared dependency.
+**`main` is green, and CI now keeps it that way.** Blockers B1–B4 from the previous
+snapshot are fixed; B5 (vault) and B6 (sync relay) are unresolved but no longer
+reachable from the UI — both are frozen behind `lib/features.ts`, so a
+half-working feature can't ship by accident.
 
 | Check | Result |
 |---|---|
-| `npx tsc --noEmit -p tsconfig.json` | ❌ **1 error** (`lib/vault-sync.ts:256`) |
-| `npm run test:extract` | ⚠️ runner missing — passes 12/12 via `npx tsx` |
-| `npm run test:sync` | ⚠️ runner missing — passes 21/21 via `npx tsx` |
-| `npm run test:sidebar-renderers` | ⚠️ runner missing — passes 79/79 via `npx tsx` |
-| `npm run test:sidebar-helpers` | ❌ **4 failures** (42 passed) |
-| `npm run test:okf` | ❌ **fails** on the null-title assertion |
-| `npm run build` | not run in this session (requires the ~25 MB model fetch) |
+| `npx tsc --noEmit -p tsconfig.json` | ✅ clean |
+| `npm run test:extract` | ✅ 12/12 |
+| `npm run test:sync` | ✅ 21/21 |
+| `npm run test:sidebar-helpers` | ✅ 46/46 |
+| `npm run test:sidebar-renderers` | ✅ 79/79 |
+| `npm run test:okf` | ✅ 52/52 |
+| `npm run build` | ✅ 64.51 MB → `.output/chrome-mv3` |
+| CI (`.github/workflows/ci.yml`) | ✅ typecheck + all five suites on every PR |
+
+Two of those numbers moved for reasons worth knowing:
+
+- **`test:okf` went from 6 effective assertions to 52.** The suite was one
+  `try`/`catch` that aborted on the first failure, so everything after the
+  null-title assertion had never run. Rewritten onto the same `check()` harness
+  the other suites use. Behind the known failure was a real one: the
+  never-executed `slugify('  --weird--chars!!  ')` case expected `weird--chars`,
+  but `slugify` collapses hyphen runs by design, so `weird-chars` is correct — the
+  assertion was wrong, not the renderer.
+- **`test:sidebar-helpers` gained 4 assertions** (42→46) because the four stale
+  ones were fixed rather than deleted: two had literal markdown backticks in the
+  expected colour, two expected `"Invalid Date"` where `formatDate()` correctly
+  returns `""`.
+
+### Also fixed here, not in the previous snapshot's list
+
+The sidebar injected a `<link>` to **fonts.googleapis.com into every host page**,
+and the options page did the same — an outbound request to Google on every
+claude.ai / chatgpt.com / gemini.google.com visit and every settings open, from a
+product whose privacy policy says nothing leaves the device. Both now load
+`@font-face` rules from `public/fonts/`, vendored at build time by
+`scripts/fetch-fonts.mjs` (latin + latin-ext, ~400 KB). The built output contains
+no reference to any Google font host.
 
 ---
 
@@ -41,6 +65,8 @@ fresh clone because its runner is not a declared dependency.
 | 2026-06-22 | **PR #4 (open)** | `PRODUCT_BRIEF.md` — 800-line product & engineering brief. **Still unmerged.** |
 | 2026-06-24 | PR #6 | Sidebar monolith (1,532 lines) split into `sidebar-{types,styles,helpers,renderers}.ts` + two new test suites |
 | 2026-07-07 | `5863955` | **Vault export**: OKF renderer, Google Drive client, vault sync engine, migration `005_vault.sql`, Settings UI |
+| 2026-07-29 | PR #7 | `PRODUCT_BRIEF.md`, this status doc, `docs/VAULT_SYNC.md` |
+| 2026-07-30 | Phase 0 | **Unblock + freeze**: B1–B4 fixed, CI added, sync/vault frozen behind `lib/features.ts`, webfonts vendored |
 
 Stale remote branches still present: `release/t1-t10`, `feature/e2e-sync`,
 `fix/onboarding-first-run`, `5-refactor-…` (all merged — safe to delete) and
@@ -48,97 +74,43 @@ Stale remote branches still present: `release/t1-t10`, `feature/e2e-sync`,
 
 ---
 
-## 3. Blockers, in priority order
+## 3. Blockers
 
-### B1 — `main` does not typecheck
+### B1–B4 — resolved in Phase 0
 
-```text
-lib/vault-sync.ts(256,33): error TS2352: Conversion of type
-'{ id: string; platform: string; platform_conv_id: string; title: string | null;
-   url: string | null; started_at: string; last_message_at: string; }'
-to type 'ConversationMeta' may be a mistake because neither type sufficiently
-overlaps with the other. … Property 'message_count' is missing
-```
-
-`ConversationMeta` carries `message_count` but not `platform_conv_id`; a raw
-`conversations` row is the reverse. The code already papers over the other half of
-the mismatch with `(conv as any).platform_conv_id` on line 360. Fix both together
-with a local row interface — see
-[VAULT_SYNC.md V9](VAULT_SYNC.md#v9--the-typecheck-error).
-
-`RELEASE_PLAN.md` requires a clean `tsc` after every task, so this is a regression
-against the project's own standard.
-
-### B2 — the test suite cannot run from a fresh clone
-
-All five `test:*` scripts in `packages/extension/package.json` invoke `tsx`:
-
-```json
-"test:extract": "tsx scripts/test-extract.ts",
-```
-
-`tsx` is declared **only** in `packages/helper/package.json` and
-`packages/mcp-server/package.json` — and neither is listed in the root
-`workspaces` array, so neither is ever installed. On a clean
-`npm install`, every test script fails with:
-
-```text
-'tsx' is not recognized as an internal or external command
-```
-
-**Fix:** add `"tsx": "^4.19.2"` to `devDependencies` in
-`packages/extension/package.json` (or the root). Workaround until then:
-`npx --yes tsx scripts/<name>.ts`.
-
-Nothing runs these suites automatically: there is no `.github/workflows`
-directory, and the two checks configured on pull requests (`pre-commit.ci` and
-CodeRabbit) do neither a typecheck nor a test run. So B1, B3, and B4 could reach
-`main` without anything objecting.
-
-### B3 — `test:okf` fails
-
-```text
-expected: title: "Untitled conversation"
-actual:   title: Untitled conversation
-```
-
-`yamlQuote()` only quotes titles containing `: # [ ] { } "` or a leading `*`.
-Bare is valid YAML, so the renderer is defensible and the test is the stricter
-party — but they disagree, so the suite is red. Quoting all titles is the cleaner
-resolution. Detail: [VAULT_SYNC.md V5](VAULT_SYNC.md#v5--okf-null-title-test-fails).
-
-> Note: node's assertion output names the wrong line (`## Assistant`) because
-> `tsx` source-mapping offsets it. The actual failure is the null-title case.
-
-### B4 — `test:sidebar-helpers` has 4 stale assertions
-
-These are **test bugs, not product bugs** — the implementation is fine in all four
-cases.
-
-| Failing assertion | Cause |
+| Was | Resolution |
 |---|---|
-| `unknown provider → fallback color` | test expects ``color: "`#888`"`` — literal backticks leaked out of a markdown snippet into the expected value. Implementation correctly returns `#888`. |
-| `empty string → fallback color` | same backtick typo |
-| `invalid date string → non-empty string` | test expects `"Invalid Date"`; `formatDate()` was changed to `return ""` on `NaN` — which is the better UI behaviour |
-| `empty string input → non-empty string` | same |
+| **B1** `TS2352` at `lib/vault-sync.ts:256` | Local `ConversationRow` interface declares the shape actually selected; `syncOneConversation` takes it, and the mirror-image `(conv as any).platform_conv_id` at `:360` is gone. `ConversationMeta` is the UI's shape and was never the right type for a raw row. |
+| **B2** `tsx` undeclared | `"tsx": "^4.19.2"` in `packages/extension` devDependencies. All five scripts now run from a clean `npm ci`. |
+| **B3** `test:okf` fails | `yamlQuote()` now quotes unconditionally — which also keeps a bare title that looks like another YAML type (`yes`, `null`, `2026-07-01`) parsing back as a string — and escapes `\` before `"`. Suite rewritten off its fail-fast `try`/`catch`; see §1 for the second bug that exposed. |
+| **B4** 4 stale sidebar-helper assertions | Fixed to match the implementation (`#888` without backticks, `""` for unparseable dates), with the stale explanatory comment corrected. |
 
-Fix the assertions to match the implementation: expect `#888` without backticks,
-and expect `""` for unparseable dates.
+Nothing enforced these before: there was no `.github/workflows` directory, and the
+two checks configured on PRs (`pre-commit.ci`, CodeRabbit) do neither a typecheck
+nor a test run — which is exactly how B1 reached `main`. `ci.yml` now does both.
 
-### B5 — vault export cannot run at all
+### B5 — vault export cannot run at all · **frozen**
 
 Nine issues are catalogued in [VAULT_SYNC.md §5](VAULT_SYNC.md#5-known-defects).
 Two are hard blockers on it running at all — a placeholder OAuth client ID, and a
 CSP that blocks every `googleapis.com` request. Three more are engine defects that
 produce silent wrong behaviour once it does run. The rest are a failing test, a
-robustness gap, a stale comment, and B1.
+robustness gap, and a stale comment. (B1 was on that list and is now fixed.)
 
-### B6 — sync relay is still undeployed
+**Frozen rather than fixed:** `FEATURES.VAULT = false` in `lib/features.ts` hides
+the Settings section. The engine, `005_vault.sql`, and the OKF suite all stay —
+`startVaultSyncLoop()` already returns immediately while `vault_config.enabled` is
+0 (the default), so nothing is left ticking behind the flag.
+
+### B6 — sync relay is still undeployed · **frozen**
 
 `https://smriti-sync-relay.YOUR-SUBDOMAIN.workers.dev` remains a placeholder in
 three places (`lib/sync.ts`, and twice in `wxt.config.ts` — `host_permissions` and
 the `connect-src` CSP). `syncNow()` throws a clear, deliberate error until it is
 replaced. Procedure: [`packages/sync-relay/README.md`](../packages/sync-relay/README.md).
+
+**Frozen rather than fixed:** `FEATURES.SYNC = false`. Unfreeze in the same commit
+that deploys the relay and replaces the three placeholders.
 
 ---
 
@@ -158,20 +130,21 @@ replaced. Procedure: [`packages/sync-relay/README.md`](../packages/sync-relay/RE
   — the repo has no eslint/prettier config, and the real gate remains the
   `tsc --noEmit` + `test:*` loop, which needs a full install and doesn't belong in
   a hook.
-- **Root `package.json` has a self-referential dependency**:
-  `"dependencies": { "smriti": "file:" }`. Almost certainly accidental; harmless
-  today, but it makes the root package depend on itself and is worth removing.
+- ~~Root `package.json` self-referential dependency (`"smriti": "file:"`)~~ —
+  removed.
 - **`packages/helper` and `packages/mcp-server` are outside the workspaces array.**
-  They are documented as legacy, which is consistent — but it is also the root
-  cause of B2, since `tsx` lives only in them.
-- **`packages/extension/stats.html` (240 KB)** is a committed rollup bundle-analysis
-  artifact. Build output; probably should be gitignored.
-- **`STORE_LISTING.md` has no remaining placeholders**, contrary to the note in
-  `CLAUDE.md`'s "known gaps" section — that line is stale.
-- **Privacy copy predates vault export.** `PRIVACY_POLICY.md`, `STORE_LISTING.md`,
-  `docs/privacy.html`, and `docs/index.html` all assert that nothing leaves the
-  device. With vault export enabled, readable markdown does. This must be corrected
-  before store submission — see [VAULT_SYNC.md §7](VAULT_SYNC.md#7-before-this-ships).
+  Documented as legacy, which is consistent — but it was also the root cause of B2,
+  since `tsx` lived only in them. `tsx` is now declared where it is used.
+- ~~`packages/extension/stats.html` (240 KB) committed build artifact~~ —
+  untracked and gitignored.
+- ~~`CLAUDE.md`'s stale `STORE_LISTING.md` placeholder note~~ — already removed in
+  `da92c6e`; `STORE_LISTING.md` has no placeholders.
+- **Privacy copy.** `PRIVACY_POLICY.md`, `STORE_LISTING.md`, `docs/privacy.html`
+  and `docs/index.html` all assert that nothing leaves the device. That is now
+  accurate for a default build — vault is frozen, and the webfonts both surfaces
+  used to fetch from Google are vendored. It stops being accurate the moment vault
+  is unfrozen; revise the copy in that change, not before. See
+  [VAULT_SYNC.md §7](VAULT_SYNC.md#7-before-this-ships).
 - **`drive-client.ts` exports `findFile()` which nothing calls** — dead code today,
   but it is exactly the function needed to fix the resync-duplication defect.
 - **`protocol.ts`'s `NMRequest`/`NMResponse` unions are historical**, left over from
@@ -180,42 +153,50 @@ replaced. Procedure: [`packages/sync-relay/README.md`](../packages/sync-relay/RE
 
 ---
 
-## 5. Suggested order of work
+## 5. What's next
 
-1. **B1** — fix the type error. One file, unblocks the standard verification loop.
-2. **B2** — declare `tsx`. One line, makes every other test result trustworthy.
-3. **B3 + B4** — get all five suites green. Small, mechanical.
-4. **Housekeeping** — close PR #4, delete merged branches, drop the `smriti: "file:"`
-   self-dependency, gitignore `stats.html`, fix the stale `CLAUDE.md` gap note.
-5. **B5** — decide whether vault export is in scope for v0.1. If yes, work through
-   [VAULT_SYNC.md §7](VAULT_SYNC.md#7-before-this-ships) *including* the privacy-copy
-   revision. If no, gate the Settings section behind a flag so a half-working
-   feature isn't shipped.
-6. **B6** — deploy the relay and replace the three placeholders, or explicitly
-   defer sync past v0.1.
-7. **Manual QA** — the remaining unticked boxes in `RELEASE_PLAN.md` all require a
-   loaded extension and cannot be closed from source review.
+Phase 0 is done. The next work is the per-app memory layers / cross-app search
+refactor, whose first milestone is WhatsApp captured and searchable:
+
+1. **Phase 1 — the Source layer.** Open the `Platform` closed union into a
+   registry-backed source id, build the connector SDK (`fetchInterceptor` +
+   `domObserver` strategies), refactor all three existing connectors onto it, and
+   land migration 006 (`spaces`, `people`, `person_identities`, dense `position`
+   rewrite). Also fixes the two ingest landmines that must not meet WhatsApp data:
+   `content_hash` dropping legitimately repeated messages, and `position` being
+   `Date.now()` rather than a turn index.
+2. **Phase 2 — the index unit.** Episodes as the retrieval unit, episode-level
+   int8 vectors out of SQLite, pre-filtered search, multilingual model.
+3. **Phase 3 — WhatsApp connector** (first milestone).
+
+**Manual QA** — the remaining unticked boxes in `RELEASE_PLAN.md` all require a
+loaded extension and cannot be closed from source review. Add to that list: the
+sidebar and options page should render with correct typography and make **no**
+request to any Google font host (check a fresh-profile network trace).
 
 ---
 
 ## 6. How this was verified
 
 ```bash
-git fetch --all --prune          # confirmed 0 ahead / 0 behind origin/main
-npm install                      # from repo root — clean, exit 0
+npm ci                                  # from repo root — clean, exit 0
 cd packages/extension
-npx tsc --noEmit -p tsconfig.json          # → 1 error (B1)
-npm run test:extract                       # → 'tsx' not recognized (B2)
-npx --yes tsx scripts/test-extract.ts           # → 12 passed, 0 failed
-npx --yes tsx scripts/test-sync.ts              # → 21 passed, 0 failed
-npx --yes tsx scripts/test-sidebar-renderers.ts # → 79 passed, 0 failed
-npx --yes tsx scripts/test-sidebar-helpers.ts   # → 42 passed, 4 failed (B4)
-npx --yes tsx scripts/test-okf-renderer.ts      # → failed (B3)
+npx tsc --noEmit -p tsconfig.json       # → 0 errors
+npm run test:extract                    # → 12 passed, 0 failed
+npm run test:sync                       # → 21 passed, 0 failed
+npm run test:sidebar-helpers            # → 46 passed, 0 failed
+npm run test:sidebar-renderers          # → 79 passed, 0 failed
+npm run test:okf                        # → 52 passed, 0 failed
+npm run build                           # → .output/chrome-mv3, 64.51 MB
 ```
 
-`npm run build` was **not** run in this session — it triggers the one-time ~25 MB
-embedding-model fetch. Note that `wxt build` uses Vite, which transpiles without
-typechecking, so a green build would **not** clear B1.
+Every script ran through the declared `tsx`, not `npx --yes`. `npm run build` was
+run this time (it also exercises the new `fetch-fonts.mjs` prebuild step); the
+built manifest was checked for `web_accessible_resources`, and
+`grep -rl 'fonts.googleapis\|fonts.gstatic' .output/chrome-mv3/` returns nothing.
+
+Note `wxt build` uses Vite, which transpiles without typechecking, so a green
+build proves less than `tsc --noEmit` does — CI runs both.
 
 The vault defects in [VAULT_SYNC.md](VAULT_SYNC.md) were established by code
 reading, not by running against a live Google account — that is impossible until

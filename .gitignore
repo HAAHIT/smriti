@@ -21,6 +21,12 @@ packages/helper/*.db-shm
 packages/extension/public/models/
 packages/extension/public/ort/
 
+# Vendored webfonts (fetched via `npm run fetch:fonts`)
+packages/extension/public/fonts/
+
+# Rollup bundle-analysis output
+packages/extension/stats.html
+
 # Cloudflare Worker (sync-relay) local state
 .wrangler/
 .dev.vars

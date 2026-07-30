@@ -35,6 +35,7 @@ import type {
   RecentConversation,
   SearchHit,
 } from "@smriti/shared";
+import { FEATURES } from "../../lib/features";
 
 // ─── messaging ───────────────────────────────────────────────────────────────
 
@@ -2456,11 +2457,10 @@ function SettingsView({ totals, embed, nav }: {
         />
       </Section>
 
-      {/* Sync */}
-      <SyncSection />
+      {/* Sync and Vault are frozen — see lib/features.ts for why. */}
+      {FEATURES.SYNC && <SyncSection />}
 
-      {/* Vault */}
-      <VaultSection />
+      {FEATURES.VAULT && <VaultSection />}
 
       {/* Export */}
       <Section title="Export">

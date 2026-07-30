@@ -3,12 +3,10 @@
 <head>
 <meta charset="utf-8" />
 <title>Smriti — your AI memory</title>
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link
-  href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&family=JetBrains+Mono:wght@400;500&display=swap"
-  rel="stylesheet"
-/>
+<!-- Webfonts are vendored into public/fonts/ by `npm run fetch:fonts` (wired into
+     prebuild). Loading them from Google would mean an outbound request every time
+     this page opens, which contradicts the product's privacy claim. -->
+<link href="/fonts/fonts.css" rel="stylesheet" />
 <style>
   /* ─── Tokens ─────────────────────────────────────────────────────────
      Library/notebook aesthetic. Three palettes swap via data-theme on <html>.
