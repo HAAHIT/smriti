@@ -600,15 +600,25 @@ function openViewer(convId: string, msgId: string, q: string): void {
 // ─── styles (shadow-DOM-scoped) ─────────────────────────────────────────────
 
 function injectStyles(shadow: ShadowRoot): void {
-  // Load Inter + Source Serif 4 once into the page so the shadow DOM can use
-  // them. Google Fonts CSS is fetched cross-origin; if blocked by host CSP we
-  // gracefully fall back to system fonts via the var() chain.
+  // Register Inter / Source Serif 4 / JetBrains Mono once per page. The fonts are
+  // vendored into the extension by `npm run fetch:fonts`, so this is an
+  // extension-local stylesheet — no request to Google, which is what lets the
+  // privacy claim ("nothing leaves the device") stay literally true.
+  //
+  // This has to go in document.head, NOT the shadow root: Chrome ignores
+  // @font-face declared inside a shadow tree, so the faces must be registered on
+  // the document even though only our shadow DOM consumes them. If the vendored
+  // files are missing (someone ran `wxt build` without the prebuild hook), the
+  // system-font fallback chain in SIDEBAR_CSS covers it.
   if (!document.getElementById("smriti-fonts-link")) {
     const link = document.createElement("link");
     link.id = "smriti-fonts-link";
     link.rel = "stylesheet";
-    link.href =
-      "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&family=JetBrains+Mono:wght@400;500&display=swap";
+    // chrome.* rather than browser.*: WXT types browser.runtime.getURL against a
+    // PublicPath union generated from public/, and public/fonts/ is build-time
+    // vendored (gitignored), so it isn't in that union. lib/embeddings.ts resolves
+    // the vendored model the same way, for the same reason.
+    link.href = chrome.runtime.getURL("/fonts/fonts.css");
     document.head.appendChild(link);
   }
 

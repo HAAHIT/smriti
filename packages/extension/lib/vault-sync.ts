@@ -21,7 +21,19 @@ import {
   resetApiCallCount,
   DriveApiError
 } from "./drive-client.js";
-import type { ConversationMeta } from "@smriti/shared";
+// NOTE: deliberately not `ConversationMeta` from @smriti/shared. That type is
+// the shape the *UI* consumes (it carries a derived `message_count` and drops
+// `platform_conv_id`); a raw `conversations` row is the mirror image. The vault
+// engine works on raw rows, so it declares the row shape it actually selects.
+interface ConversationRow {
+  id: string;
+  platform: string;
+  platform_conv_id: string;
+  title: string | null;
+  url: string | null;
+  started_at: string;
+  last_message_at: string;
+}
 
 const SYNC_INTERVAL_MS = 5 * 60 * 1000;    // 5 minutes
 const IDLE_INTERVAL_MS = 30 * 60 * 1000;   // 30 minutes
@@ -226,15 +238,7 @@ export async function syncRound(): Promise<VaultSyncResult> {
   // 1. Not in vault_sync_state at all (never synced)
   // 2. In vault_sync_state but last_message_at > last_synced_at (updated)
   // 3. Or status = 'error'
-  const pending = dbAll<{
-    id: string;
-    platform: string;
-    platform_conv_id: string;
-    title: string | null;
-    url: string | null;
-    started_at: string;
-    last_message_at: string;
-  }>(`
+  const pending = dbAll<ConversationRow>(`
     SELECT c.id, c.platform, c.platform_conv_id, c.title, c.url,
            c.started_at, c.last_message_at
     FROM conversations c
@@ -253,7 +257,7 @@ export async function syncRound(): Promise<VaultSyncResult> {
     }
 
     try {
-      await syncOneConversation(conv as ConversationMeta);
+      await syncOneConversation(conv);
       synced++;
     } catch (e) {
       if (e instanceof DriveApiError && e.status === 429 && !e.retryable) {
@@ -294,7 +298,7 @@ export async function syncRound(): Promise<VaultSyncResult> {
 }
 
 export async function syncConversation(conversationId: string): Promise<VaultSyncResult> {
-  const conv = dbGet<ConversationMeta>(
+  const conv = dbGet<ConversationRow>(
     "SELECT id, platform, platform_conv_id, title, url, started_at, last_message_at FROM conversations WHERE id = ?",
     [conversationId]
   );
@@ -325,7 +329,7 @@ export async function resyncAll(): Promise<VaultSyncResult> {
   return syncRound();
 }
 
-async function syncOneConversation(conv: ConversationMeta): Promise<void> {
+async function syncOneConversation(conv: ConversationRow): Promise<void> {
   // 1. Fetch messages
   const messages = dbAll<OkfMessage>(
     `SELECT id, role, content_text, created_at, position
@@ -353,11 +357,10 @@ async function syncOneConversation(conv: ConversationMeta): Promise<void> {
   );
 
   // 4. Render OKF
-  // Create a proper OkfConversationMeta type since OkfConversationMeta may not exactly match ConversationMeta
   const okfMeta = {
     id: conv.id,
     platform: conv.platform,
-    platform_conv_id: (conv as any).platform_conv_id ?? conv.id, // TS workaround for ConversationMeta
+    platform_conv_id: conv.platform_conv_id,
     title: conv.title,
     url: conv.url,
     started_at: conv.started_at,
