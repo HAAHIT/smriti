@@ -19,9 +19,6 @@
   "engines": {
     "node": ">=20"
   },
-  "dependencies": {
-    "smriti": "file:"
-  },
   "overrides": {
     "@vitejs/plugin-react": "5.1.1",
     "@wxt-dev/module-react": {

@@ -35,6 +35,25 @@ import type {
   RecentConversation,
   SearchHit,
 } from "@smriti/shared";
+import { injectFontFaces } from "../../lib/fonts";
+
+// ─── feature flags ───────────────────────────────────────────────────────────
+
+/**
+ * Frozen features — built, not shipped.
+ *
+ * Sync and Vault both work only after manual setup the user cannot do from the
+ * UI: sync needs the relay deployed and its placeholder worker URL swapped in
+ * (lib/sync.ts, wxt.config.ts), and vault export cannot authenticate at all
+ * (placeholder OAuth client ID, plus a CSP that blocks googleapis.com). Their
+ * engine code and migrations 004/005 are deliberately left intact — this hides
+ * the entry points so a half-working feature can't ship, and flipping a flag
+ * back to `true` is all it takes to resume the work.
+ */
+const FEATURES = {
+  sync: false,
+  vault: false,
+} as const;
 
 // ─── messaging ───────────────────────────────────────────────────────────────
 
@@ -1768,8 +1787,8 @@ function OnboardingStep1({ onNext }: { onNext: () => void }) {
       }}>
         <strong style={{ color: "var(--ink)" }}>Everything stays on your device.</strong>{" "}
         Your memory is built and stored locally. The only network calls are Smriti reading your
-        own chat history from the AI sites you're already signed into — plus optional
-        end-to-end-encrypted sync, if you turn it on.
+        own chat history from the AI sites you're already signed into
+        {FEATURES.sync ? " — plus optional end-to-end-encrypted sync, if you turn it on." : "."}
       </div>
       <PrimaryButton onClick={onNext}>Next</PrimaryButton>
     </div>
@@ -2456,11 +2475,11 @@ function SettingsView({ totals, embed, nav }: {
         />
       </Section>
 
-      {/* Sync */}
-      <SyncSection />
+      {/* Sync — frozen, see FEATURES */}
+      {FEATURES.sync && <SyncSection />}
 
-      {/* Vault */}
-      <VaultSection />
+      {/* Vault — frozen, see FEATURES */}
+      {FEATURES.vault && <VaultSection />}
 
       {/* Export */}
       <Section title="Export">
@@ -2545,8 +2564,10 @@ function SettingsView({ totals, embed, nav }: {
         Smriti stores everything in <code style={{ background: "var(--chip-bg)", padding: "1px 4px", borderRadius: 2 }}>%APPDATA%\Smriti\smriti.db</code>{" "}
         (Windows) or <code style={{ background: "var(--chip-bg)", padding: "1px 4px", borderRadius: 2 }}>~/Library/Application Support/Smriti/smriti.db</code> (macOS).
         Nothing is sent over the network except the requests Claude.ai / ChatGPT / Gemini already
-        make from your browser — unless you turn on Sync, which uploads only end-to-end-encrypted
-        memory blobs that the relay cannot read.
+        make from your browser
+        {FEATURES.sync
+          ? " — unless you turn on Sync, which uploads only end-to-end-encrypted memory blobs that the relay cannot read."
+          : "."}
       </p>
     </div>
   );
@@ -3640,6 +3661,11 @@ class ErrorBoundary extends Component<{ children: React.ReactNode }, EBState> {
 }
 
 // ─── Mount ────────────────────────────────────────────────────────────────────
+
+// Vendored fonts, shipped inside the extension — no request to Google. This is
+// an extension page, so a root-relative path already resolves to the extension
+// origin. Runs before render so the swap happens as early as possible.
+injectFontFaces(document, (file) => `/fonts/${file}`);
 
 const root = document.getElementById("root");
 if (root) createRoot(root).render(

@@ -15,8 +15,8 @@ feature, memory is the product.) Goal: fundable startup / YC.
 - **[`PRODUCT_BRIEF.md`](PRODUCT_BRIEF.md)** — the full product & engineering
   brief. Read this first if you're new to the codebase.
 - **[`docs/REPO_STATUS.md`](docs/REPO_STATUS.md)** — verified build health right
-  now: what compiles, what tests pass, what's blocked. **`main` is currently
-  red — read this before starting work.**
+  now: what compiles, what tests pass, what's blocked. Phase 0 made the tree
+  green and put CI in front of it.
 - **[`docs/VAULT_SYNC.md`](docs/VAULT_SYNC.md)** — the vault export subsystem
   (OKF markdown → Google Drive), its setup procedure, and its known defects.
 - **[`RELEASE_PLAN.md`](RELEASE_PLAN.md)** — the executable pre-release PRD.
@@ -120,9 +120,11 @@ npm run build            # → .output/chrome-mv3  (load unpacked in chrome://ex
 npm run dev              # live dev
 ```
 
-⚠️ On a fresh clone the `test:*` scripts fail with `'tsx' is not recognized` —
-`tsx` isn't declared in any installed workspace. Until that's fixed, run them as
-`npx --yes tsx scripts/<name>.ts`. See `docs/REPO_STATUS.md`.
+All five `test:*` scripts run from a fresh clone (`tsx` is a declared devDependency
+of `packages/extension`). `.github/workflows/ci.yml` runs the typecheck and all
+five suites on every PR and on pushes to `main` — it deliberately does **not**
+run `npm run build`, because `prebuild` triggers the ~25 MB model fetch and
+`wxt build` uses Vite, which transpiles without typechecking.
 
 ## Known gaps / next steps
 
@@ -130,27 +132,34 @@ npm run dev              # live dev
 anchors, snippets, and acceptance criteria) — work from it, in order.**
 `docs/REPO_STATUS.md` has the current, verified state and a suggested work order.
 
-**Red right now — fix these first:**
-- `main` does not typecheck: one TS2352 in `lib/vault-sync.ts` (`ConversationMeta`
-  has `message_count` but not `platform_conv_id`; a raw row is the reverse).
-- `tsx` is undeclared, so no `test:*` script runs from a fresh clone.
-- `test:okf` and `test:sidebar-helpers` fail when run manually (the sidebar-helper
-  failures are stale assertions, not product bugs).
-- Vault export can't authenticate: placeholder OAuth client ID + a CSP that blocks
-  `googleapis.com`, plus three engine defects. See `docs/VAULT_SYNC.md`.
+**Green as of Phase 0** — the typecheck is clean, all five suites pass, and CI
+blocks merges. The build-health items that used to sit here are fixed.
+
+**Frozen (built, not shipped):**
+- **Sync and Vault UI are hidden** behind the `FEATURES` flag at the top of
+  `entrypoints/options/main.tsx`. Their engine code (`lib/sync.ts`,
+  `lib/vault-sync.ts`, `lib/drive-client.ts`) and migrations 004/005 are intact
+  and untouched — flip a flag to resume. They are hidden because neither can be
+  turned on from the UI: sync needs the relay deployed and its placeholder URL
+  swapped in, and vault export can't authenticate at all (placeholder OAuth
+  client ID + a CSP that blocks `googleapis.com`, plus three engine defects —
+  see `docs/VAULT_SYNC.md`).
 
 **Standing gaps:**
 - Injection selectors need live tuning per platform (sites change often).
 - BYOK LLM extraction (optional) would lift memory quality above heuristics.
 - Optional E2E-encrypted sync (the fundability piece) is built (memories only):
   `lib/sync-crypto.ts` (HKDF + AES-256-GCM), `lib/sync.ts` (whole-state merge),
-  `lib/sync-merge.ts` (pure decider, `npm run test:sync`), Settings → Sync UI,
-  and `packages/sync-relay`. Remaining manual step: `wrangler deploy` the relay,
-  then swap the `smriti-sync-relay.YOUR-SUBDOMAIN.workers.dev` placeholder in
-  `lib/sync.ts` + `wxt.config.ts` (×2). See `packages/sync-relay/README.md`.
+  `lib/sync-merge.ts` (pure decider, `npm run test:sync`), Settings → Sync UI
+  (currently hidden — see *Frozen* above), and `packages/sync-relay`. Remaining
+  manual step: `wrangler deploy` the relay, then swap the
+  `smriti-sync-relay.YOUR-SUBDOMAIN.workers.dev` placeholder in `lib/sync.ts` +
+  `wxt.config.ts` (×2). See `packages/sync-relay/README.md`.
 - Privacy copy (`PRIVACY_POLICY.md`, `STORE_LISTING.md`, `docs/privacy.html`,
   `docs/index.html`) predates vault export and still claims nothing leaves the
-  device. Must be corrected before store submission.
+  device. Must be corrected before store submission. (The *code* now matches
+  that claim again: Phase 0 vendored the webfonts, so no surface requests
+  `fonts.googleapis.com` any more — see `packages/extension/public/fonts/`.)
 - Not yet shipped to Chrome Web Store.
 
 ## Conventions

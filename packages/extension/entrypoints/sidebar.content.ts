@@ -46,6 +46,7 @@ import type {
   SearchHit,
 } from "@smriti/shared";
 import { SIDEBAR_CSS } from "../lib/sidebar-styles";
+import { injectFontFaces } from "../lib/fonts";
 import { CurrentChat, PanelState, PanelHandlers, HydratedHero } from "../lib/sidebar-types";
 import { detectCurrentChat, providerBadge, formatDate, escapeHtml } from "../lib/sidebar-helpers";
 import { renderCollapsed, renderExpanded, populateBody, updateToast } from "../lib/sidebar-renderers";
@@ -600,17 +601,12 @@ function openViewer(convId: string, msgId: string, q: string): void {
 // ─── styles (shadow-DOM-scoped) ─────────────────────────────────────────────
 
 function injectStyles(shadow: ShadowRoot): void {
-  // Load Inter + Source Serif 4 once into the page so the shadow DOM can use
-  // them. Google Fonts CSS is fetched cross-origin; if blocked by host CSP we
-  // gracefully fall back to system fonts via the var() chain.
-  if (!document.getElementById("smriti-fonts-link")) {
-    const link = document.createElement("link");
-    link.id = "smriti-fonts-link";
-    link.rel = "stylesheet";
-    link.href =
-      "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&family=JetBrains+Mono:wght@400;500&display=swap";
-    document.head.appendChild(link);
-  }
+  // Load the vendored fonts once into the host page. They must live in the host
+  // document's head, not in the shadow root — Chrome does not apply @font-face
+  // declared inside a shadow tree. Nothing is fetched over the network: the
+  // files ship inside the extension. If they fail to load for any reason, the
+  // var() fallback chains below degrade to system fonts.
+  injectFontFaces(document, (file) => browser.runtime.getURL(`/fonts/${file}`));
 
   const style = document.createElement("style");
   style.textContent = SIDEBAR_CSS

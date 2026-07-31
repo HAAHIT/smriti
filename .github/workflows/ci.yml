@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A newer push to the same branch supersedes an in-flight run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: typecheck + tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # Installs every workspace. The extension's `postinstall` runs
+      # `wxt prepare`, which generates the gitignored
+      # packages/extension/.wxt/tsconfig.json that its tsconfig extends — so
+      # this must complete before the typecheck step. If it ever stops running,
+      # tsc fails loudly with TS5083 rather than silently passing.
+      - name: Install
+        run: npm ci
+
+      - name: Assert wxt prepare generated the base tsconfig
+        run: test -f packages/extension/.wxt/tsconfig.json
+
+      - name: Typecheck
+        working-directory: packages/extension
+        run: npx tsc --noEmit -p tsconfig.json
+
+      - name: Test — extraction quality
+        working-directory: packages/extension
+        run: npm run test:extract
+
+      - name: Test — sync crypto + merge decider
+        working-directory: packages/extension
+        run: npm run test:sync
+
+      - name: Test — sidebar helpers
+        working-directory: packages/extension
+        run: npm run test:sidebar-helpers
+
+      - name: Test — sidebar renderers
+        working-directory: packages/extension
+        run: npm run test:sidebar-renderers
+
+      - name: Test — OKF renderer
+        working-directory: packages/extension
+        run: npm run test:okf
+
+      # NOTE: `npm run build` is deliberately not run here. Its `prebuild` hook
+      # invokes scripts/fetch-model.mjs, which downloads ~25 MB of embedding
+      # model + ONNX wasm. wxt build uses Vite, which transpiles without
+      # typechecking, so a green build would not catch what the tsc step above
+      # catches anyway.

@@ -44,6 +44,20 @@ export default defineConfig({
       "48":  "icons/icon-48.png",
       "128": "icons/icon-128.png",
     },
+    // The sidebar's @font-face rules live in the host page's head (Chrome does
+    // not apply @font-face inside a shadow root), so the host origin must be
+    // allowed to load the vendored font files. Keep these matches in sync with
+    // host_permissions above.
+    web_accessible_resources: [
+      {
+        resources: ["fonts/*.woff2"],
+        matches: [
+          "https://claude.ai/*",
+          "https://chatgpt.com/*",
+          "https://gemini.google.com/*",
+        ],
+      },
+    ],
     content_security_policy: {
       // connect-src allows the offscreen doc to reach the sync relay. Replace
       // the placeholder host after `wrangler deploy`.
