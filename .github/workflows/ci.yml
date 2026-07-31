@@ -58,6 +58,16 @@ jobs:
         working-directory: packages/extension
         run: npm run test:okf
 
+      - name: Test — source registry + connector SDK
+        working-directory: packages/extension
+        run: npm run test:connectors
+
+      # Runs the real migration SQL against real SQLite. This one guards user
+      # data: 006 rewrites every message's position and author.
+      - name: Test — migrations
+        working-directory: packages/extension
+        run: npm run test:migrations
+
       # NOTE: `npm run build` is deliberately not run here. Its `prebuild` hook
       # invokes scripts/fetch-model.mjs, which downloads ~25 MB of embedding
       # model + ONNX wasm. wxt build uses Vite, which transpiles without

@@ -47,6 +47,7 @@ import type {
 } from "@smriti/shared";
 import { SIDEBAR_CSS } from "../lib/sidebar-styles";
 import { injectFontFaces } from "../lib/fonts";
+import { overlayOrigins } from "../lib/connectors/registry";
 import { CurrentChat, PanelState, PanelHandlers, HydratedHero } from "../lib/sidebar-types";
 import { detectCurrentChat, providerBadge, formatDate, escapeHtml } from "../lib/sidebar-helpers";
 import { renderCollapsed, renderExpanded, populateBody, updateToast } from "../lib/sidebar-renderers";
@@ -60,11 +61,10 @@ const PANEL_WIDTH = 400;   // keep in sync with .rc-panel width in CSS
 const COLLAPSED_WIDTH = 36;
 
 export default defineContentScript({
-  matches: [
-    "https://claude.ai/*",
-    "https://chatgpt.com/*",
-    "https://gemini.google.com/*",
-  ],
+  // Sources whose `overlay` capability is on. Derived from the registry, so
+  // this can no longer drift from host_permissions or the connectors' matches
+  // (which is exactly how chat.openai.com ended up unreachable here).
+  matches: overlayOrigins(),
   runAt: "document_idle",
   main() {
     if (document.getElementById(SMRITI_PANEL_ID)) return;

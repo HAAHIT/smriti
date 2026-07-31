@@ -51,10 +51,28 @@ packages/
 ```
 
 Extension internals:
-- `entrypoints/*-main.content.ts` — MAIN-world fetch interceptors that capture
-  messages (read-only) from each platform's API stream.
+- `lib/connectors/registry.ts` — **the source registry.** One `SourceDef` per
+  place Smriti captures from, and the single source of truth for every origin
+  list: content-script `matches`, the sidebar's `matches`, `host_permissions`,
+  and the capture-pause host mapping are all derived from it. Adding a source
+  means adding an entry here. Pure data + pure functions — it is imported by
+  content scripts *and* by `wxt.config.ts` at build time, so keep it free of
+  browser globals.
+- `lib/connectors/fetch-interceptor.ts` / `dom-observer.ts` — the two capture
+  strategies. A connector supplies only what is site-specific (which requests to
+  watch, how to parse a payload, or which selectors mark a turn); all the
+  mechanism lives in the strategy.
+- `entrypoints/*-main.content.ts` — the per-source connector definitions.
+  MAIN-world for fetch interceptors (read-only; they tee the response so the
+  page is untouched).
+- `entrypoints/bridge.content.ts` — ISOLATED-world relay. MAIN-world scripts
+  can't reach `chrome.*`, so they `postMessage` and this forwards. One bridge
+  for all sources; its `matches` is the union of registry origins.
 - `entrypoints/background.ts` — service worker; routes messages, owns the
   offscreen doc lifecycle + capture toggles.
+- `lib/ingest.ts` — turns capture events into rows. Owns the two things a
+  connector cannot: the dense per-conversation `position`, and the dedup hash
+  (`lib/ingest-identity.ts`, kept DB-free so it is testable).
 - `lib/offscreen-main.ts` — the compute engine. Owns SQLite (sql.js over OPFS),
   embeddings, search, memory. All RPCs dispatch here.
 - `lib/db.ts` — sql.js + OPFS persistence (debounced flush). Synchronous query
@@ -101,7 +119,13 @@ The loop: sidebar watches the host composer as you type → `recall_memories` RP
   `host_permissions` **and** the `connect-src` CSP in `wxt.config.ts` — the
   offscreen doc is an extension page, so CSP governs its `fetch()`.
 - Schema changes: append a new migration tuple to `SCHEMA` in `lib/migrations.ts`
-  (currently `001_init` … `005_vault`). Never edit a shipped migration.
+  (currently `001_init` … `006_sources`). Never edit a shipped migration.
+  `npm run test:migrations` runs the real SQL against real SQLite — add coverage
+  there for anything that rewrites existing rows.
+- Adding a capture source: add a `SourceDef` to `lib/connectors/registry.ts` and
+  one connector file using `installFetchInterceptor` or `installDomObserver`.
+  Do **not** hardcode an origin anywhere else. The synthetic fourth connector in
+  `scripts/test-connectors.ts` is the worked example.
 
 ## Build / test / run
 
@@ -116,13 +140,15 @@ npm run test:sync                # sync crypto + merge decider
 npm run test:sidebar-helpers     # pure sidebar helpers
 npm run test:sidebar-renderers   # pure sidebar renderers
 npm run test:okf                 # OKF markdown renderer
+npm run test:connectors          # source registry + connector SDK + msg identity
+npm run test:migrations          # real migration SQL against real SQLite
 npm run build            # → .output/chrome-mv3  (load unpacked in chrome://extensions)
 npm run dev              # live dev
 ```
 
-All five `test:*` scripts run from a fresh clone (`tsx` is a declared devDependency
-of `packages/extension`). `.github/workflows/ci.yml` runs the typecheck and all
-five suites on every PR and on pushes to `main` — it deliberately does **not**
+All `test:*` scripts run from a fresh clone (`tsx` is a declared devDependency
+of `packages/extension`). `.github/workflows/ci.yml` runs the typecheck and every
+suite on every PR and on pushes to `main` — it deliberately does **not**
 run `npm run build`, because `prebuild` triggers the ~25 MB model fetch and
 `wxt build` uses Vite, which transpiles without typechecking.
 

@@ -267,5 +267,163 @@ CREATE TABLE vault_config (
 );
 INSERT INTO vault_config (id, enabled) VALUES (1, 0);
 `
+  ],
+  [
+    "006_sources.sql",
+    `
+-- Phase 1 — the source layer.
+--
+-- Three assumptions baked into 001_init stop being true once a source can be
+-- human chat rather than an AI assistant:
+--   * a conversation has exactly two roles        -> people / person_identities
+--   * a conversation belongs to a "platform"      -> spaces
+--   * position is a wall-clock tiebreaker         -> dense per-conversation rank
+--
+-- NOTE ON TRIGGERS: this migration bulk-updates messages.position,
+-- messages.author_id and (defensively) messages.platform_msg_id. None of those
+-- are mirrored into messages_fts, but the existing messages_au trigger fires on
+-- ANY update and rewrites the row's FTS entry regardless — an O(rows) FTS
+-- rebuild for changes the index does not care about. So the trigger is dropped
+-- for the duration and recreated at the end as AFTER UPDATE OF <indexed cols>,
+-- which also stops every future position/model/token_count write from churning
+-- the index.
+DROP TRIGGER messages_au;
+
+-- ─── Spaces ─────────────────────────────────────────────────────────────────
+-- A space is "where a conversation happened" at a level above the individual
+-- thread: an app (all of Claude), a DM with one person, or a group chat. It is
+-- what Phase 4's per-space memory layers attach to.
+CREATE TABLE spaces (
+  id             TEXT PRIMARY KEY,
+  source         TEXT NOT NULL,          -- registry SourceId
+  space_key      TEXT NOT NULL,          -- source-local key (chat id, phone, "app")
+  label          TEXT,
+  kind           TEXT NOT NULL,          -- app | dm | group
+  created_at     TEXT NOT NULL,
+  last_active_at TEXT,
+  UNIQUE (source, space_key)
+);
+
+CREATE INDEX idx_spaces_source ON spaces(source, last_active_at DESC);
+
+-- ─── People ─────────────────────────────────────────────────────────────────
+-- One row per human (or bot) Smriti knows about. Identity resolution across
+-- sources happens through person_identities, so the same person reached on two
+-- sources collapses to one row.
+CREATE TABLE people (
+  id           TEXT PRIMARY KEY,
+  display_name TEXT,
+  is_self      INTEGER NOT NULL DEFAULT 0,   -- exactly one row should be 1
+  created_at   TEXT NOT NULL
+);
+
+CREATE INDEX idx_people_self ON people(is_self);
+
+CREATE TABLE person_identities (
+  person_id    TEXT NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+  source       TEXT NOT NULL,
+  external_id  TEXT NOT NULL,
+  display_name TEXT,
+  PRIMARY KEY (source, external_id)
+);
+
+CREATE INDEX idx_pident_person ON person_identities(person_id);
+
+-- ─── Wiring the existing tables in ──────────────────────────────────────────
+ALTER TABLE conversations ADD COLUMN space_id TEXT REFERENCES spaces(id);
+ALTER TABLE messages      ADD COLUMN author_id TEXT REFERENCES people(id);
+
+CREATE INDEX idx_conv_space ON conversations(space_id, last_message_at DESC);
+CREATE INDEX idx_msg_author ON messages(author_id);
+
+-- ─── platform_msg_id becomes the identity key ───────────────────────────────
+-- messages.platform_msg_id already existed and is already populated by
+-- backfill; the live connectors now set it too. This partial unique index is
+-- what makes re-capturing an already-stored message a no-op regardless of what
+-- its text hashed to.
+--
+-- Defensive first: if any (conversation_id, platform_msg_id) pair is already
+-- duplicated, the index creation would fail and roll the migration back on
+-- every boot, bricking the extension. Keep the earliest row and null the rest.
+UPDATE messages SET platform_msg_id = NULL
+WHERE platform_msg_id IS NOT NULL
+  AND rowid NOT IN (
+    SELECT MIN(rowid) FROM messages
+    WHERE platform_msg_id IS NOT NULL
+    GROUP BY conversation_id, platform_msg_id
+  );
+
+CREATE UNIQUE INDEX idx_msg_external
+  ON messages(conversation_id, platform_msg_id)
+  WHERE platform_msg_id IS NOT NULL;
+
+-- ─── Dense position ─────────────────────────────────────────────────────────
+-- position was Date.now() for live captures and Date.parse(created_at) for
+-- backfilled rows — a wall-clock tiebreaker, not a turn index, so the two
+-- interleave by capture time instead of by conversation order. Rewrite every
+-- existing row to a dense 0-based per-conversation rank derived from the
+-- current ordering, so old rows and new ones share one scale.
+CREATE TEMP TABLE _dense_pos AS
+SELECT
+  rowid AS rid,
+  ROW_NUMBER() OVER (
+    PARTITION BY conversation_id
+    ORDER BY position, created_at, rowid
+  ) - 1 AS newpos
+FROM messages;
+
+CREATE INDEX _dense_pos_rid ON _dense_pos(rid);
+
+UPDATE messages
+SET position = (SELECT newpos FROM _dense_pos WHERE _dense_pos.rid = messages.rowid)
+WHERE rowid IN (SELECT rid FROM _dense_pos);
+
+DROP TABLE _dense_pos;
+
+-- ─── Backfill people and spaces for existing data ───────────────────────────
+-- Ids are deterministic strings rather than UUIDs so this migration is
+-- re-derivable and the rows are readable in a debug session.
+INSERT INTO people (id, display_name, is_self, created_at)
+VALUES ('person:self', 'You', 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+
+-- One bot person per platform actually present in the archive.
+INSERT INTO people (id, display_name, is_self, created_at)
+SELECT DISTINCT 'person:bot:' || platform, platform, 0,
+       strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+FROM conversations;
+
+INSERT INTO person_identities (person_id, source, external_id, display_name)
+SELECT DISTINCT 'person:bot:' || platform, platform, 'assistant', platform
+FROM conversations;
+
+-- One app-level space per platform. Human sources will add dm/group spaces.
+INSERT INTO spaces (id, source, space_key, label, kind, created_at, last_active_at)
+SELECT DISTINCT
+  'space:' || platform, platform, 'app', platform, 'app',
+  strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+  (SELECT MAX(last_message_at) FROM conversations c2 WHERE c2.platform = c.platform)
+FROM conversations c;
+
+UPDATE conversations
+SET space_id = 'space:' || platform
+WHERE space_id IS NULL;
+
+UPDATE messages
+SET author_id = CASE
+  WHEN role = 'user' THEN 'person:self'
+  WHEN role = 'assistant' THEN
+    'person:bot:' || (SELECT platform FROM conversations c WHERE c.id = messages.conversation_id)
+  ELSE NULL          -- system / tool turns are not people
+END
+WHERE author_id IS NULL;
+
+-- ─── Restore the FTS trigger, now column-scoped ─────────────────────────────
+CREATE TRIGGER messages_au AFTER UPDATE OF content_text, role, conversation_id ON messages BEGIN
+  INSERT INTO messages_fts(messages_fts, rowid, content_text, role, conversation_id)
+  VALUES ('delete', old.rowid, old.content_text, old.role, old.conversation_id);
+  INSERT INTO messages_fts(rowid, content_text, role, conversation_id)
+  VALUES (new.rowid, new.content_text, new.role, new.conversation_id);
+END;
+`
   ]
 ];
