@@ -14,6 +14,7 @@
 
 import { randomUUID } from "./crypto.js";
 import { dbAll, dbGet, dbRun, markDirty } from "./db.js";
+import { buildFtsQuery } from "./fts-query.js";
 import {
   EMBED_MODEL,
   EMBED_DIMS,
@@ -355,15 +356,6 @@ export async function recallMemories(query: string, limit = 6): Promise<MemoryRe
   console.debug(`[smriti:memory] recall qlen=${q.length} hits=${result.length} ms=${ms}`);
   if (ms > 200) console.warn(`[smriti:memory] slow recall (${ms}ms) qlen=${q.length}`);
   return result;
-}
-
-function buildFtsQuery(q: string): string {
-  const tokens = q
-    .split(/\s+/)
-    .map((t) => t.replace(/[^\p{L}\p{N}_]/gu, ""))
-    .filter((t) => t.length >= 2);
-  if (tokens.length === 0) return "";
-  return tokens.join(" OR ");
 }
 
 // Mark memories as used (called when they're injected). Powers recency boost.

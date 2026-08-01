@@ -10,9 +10,10 @@
 //   This document ignores any message not targeting it.
 //
 // Boot sequence:
-//   1. initDb()     — load/create SQLite from OPFS, apply migrations.
-//   2. startIndexWorker() — begins lazily embedding pending messages.
-//   3. Signal "offscreen_ready" to background.
+//   1. initDb()      — load/create SQLite from OPFS, apply migrations.
+//   2. initVectors() — load the episode vector store from OPFS.
+//   3. startIndexWorker() — begins lazily embedding pending messages.
+//   4. Signal "offscreen_ready" to background.
 
 import { initDb, flushToOpfs, dbAll } from "../lib/db.js";
 import { startIndexWorker } from "../lib/index-worker.js";
@@ -21,7 +22,9 @@ import {
   countEmbedStatus,
   isModelReady,
   EMBED_MODEL,
+  EMBED_DIMS,
 } from "../lib/embeddings.js";
+import { initVectors, flushVectors, vectorStats } from "../lib/vectors.js";
 import {
   search,
   getConversation,
@@ -74,6 +77,14 @@ async function boot(): Promise<void> {
   try {
     await initDb();
     console.log("[smriti:offscreen] db ready");
+
+    // Episode vectors live outside SQLite, in their own OPFS file, so they need
+    // their own load. Before the index worker starts: it refuses to touch
+    // episodes until this resolves, and would otherwise idle a tick.
+    await initVectors(EMBED_DIMS);
+    const vs = vectorStats();
+    console.log(`[smriti:offscreen] vectors ready count=${vs.count} bytes=${vs.bytes}`);
+
     startIndexWorker();
 
     // Start vault sync loop if enabled
@@ -321,7 +332,10 @@ async function handleMessage(
     }
 
     case "flush": {
-      await flushToOpfs();
+      // Two stores, two files. Both are debounced, so an explicit flush has to
+      // name both or the episode vectors written since the last debounce are
+      // the ones that get lost.
+      await Promise.all([flushToOpfs(), flushVectors()]);
       return { ok: true };
     }
 

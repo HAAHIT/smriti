@@ -163,13 +163,13 @@ check(
 );
 
 check(
-  "unknown provider → normalized label, fallback color `#888`",
-  eq(providerBadge("some-new-ai"), { label: "Other", color: "`#888`" })
+  "unknown provider → normalized label, fallback color #888",
+  eq(providerBadge("some-new-ai"), { label: "Other", color: "#888" })
 );
 
 check(
   "empty string → normalized label, fallback color",
-  eq(providerBadge(""), { label: "Other", color: "`#888`" })
+  eq(providerBadge(""), { label: "Other", color: "#888" })
 );
 
 // ─── memoryKindMeta ───────────────────────────────────────────────────────────
@@ -227,16 +227,17 @@ check(
   formatDate("2026-01-15T12:00:00Z").includes("1")   // locale may differ
 );
 
-// new Date("not-a-date") creates an Invalid Date without throwing; toLocaleDateString
-// returns "Invalid Date" in V8/Node rather than throwing, so the catch block is not hit.
+// new Date("not-a-date") creates an Invalid Date without throwing. formatDate
+// guards on Number.isNaN(d.getTime()) and returns "" rather than letting the
+// literal string "Invalid Date" reach the UI.
 check(
-  "invalid date string → non-empty 'Invalid Date' string (no exception thrown)",
-  formatDate("not-a-date").length > 0
+  "invalid date string → empty string",
+  formatDate("not-a-date") === ""
 );
 
 check(
-  "empty string input → non-empty string (Invalid Date, no throw)",
-  formatDate("").length > 0
+  "empty string input → empty string",
+  formatDate("") === ""
 );
 
 // Cross-check: two different months produce different output

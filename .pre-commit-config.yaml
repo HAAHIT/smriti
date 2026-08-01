@@ -18,6 +18,7 @@ exclude: |
   (?x)^(
     package-lock\.json|
     packages/extension/stats\.html|
+    packages/extension/public/fonts/.*\.woff2|
     docs/screenshots/.*
   )$
 

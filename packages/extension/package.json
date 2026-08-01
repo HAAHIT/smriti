@@ -15,6 +15,12 @@
     "test:sidebar-helpers": "tsx scripts/test-sidebar-helpers.ts",
     "test:sidebar-renderers": "tsx scripts/test-sidebar-renderers.ts",
     "test:okf": "tsx scripts/test-okf-renderer.ts",
+    "test:connectors": "tsx scripts/test-connectors.ts",
+    "test:migrations": "tsx scripts/test-migrations.ts",
+    "test:segment": "tsx scripts/test-segment.ts",
+    "test:fts-query": "tsx scripts/test-fts-query.ts",
+    "test:vectors": "tsx scripts/test-vectors.ts",
+    "test:people": "tsx scripts/test-people.ts",
     "fetch:model": "node scripts/fetch-model.mjs",
     "postinstall": "wxt prepare"
   },
@@ -33,6 +39,7 @@
     "@vitejs/plugin-react": "^5.1.1",
     "@wxt-dev/module-react": "^1.1.3",
     "pngjs": "^7.0.0",
+    "tsx": "^4.19.2",
     "wxt": "^0.19.13"
   }
 }

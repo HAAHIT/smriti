@@ -54,11 +54,20 @@ function capitalize(s: string): string {
 }
 
 function yamlQuote(text: string): string {
-  // Titles containing :, #, [, ], {, }, ", or leading * MUST be wrapped in double quotes
-  // with internal " escaped as \".
-  const needsQuotes = /[:#\[\]{}"]|^\*/.test(text);
-  if (!needsQuotes) return text;
-  return `"${text.replace(/"/g, '\\"')}"`;
+  // Always emit a double-quoted scalar. Quoting only the titles that strictly
+  // require it (:, #, [, ], {, }, ", leading *) is valid YAML but leaves the
+  // frontmatter inconsistent and one unanticipated character away from being
+  // malformed — so quote unconditionally.
+  //
+  // Inside a double-quoted scalar YAML treats \ as an escape introducer, so the
+  // backslash must be escaped first, before the quote.
+  const escaped = text
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n')
+    .replace(/\t/g, '\\t');
+  return `"${escaped}"`;
 }
 
 // ─── Core Renderer Functions ────────────────────────────────────────────────

@@ -1,92 +1,46 @@
-// MAIN-world content script: runs in the page's own JS context so it can
-// monkey-patch window.fetch. Cannot use chrome.* APIs from here.
-// Communicates with the ISOLATED content script via window.postMessage.
+// Claude connector — `fetchInterceptor` strategy.
 //
-// Phase 1 strategy: intercept the streaming completion endpoint, tee the
-// response body, accumulate assistant deltas, and emit one user + one
-// assistant CaptureEvent per round-trip.
+// All the mechanism (patching fetch, teeing the response, SSE framing, event
+// building, postMessage) lives in lib/connectors/fetch-interceptor.ts. What
+// remains here is only what is specific to Claude: which endpoints carry a
+// completion, how its request body encodes the user's message, and how its SSE
+// frames encode assistant deltas.
 //
-// Known fragility: Claude has changed SSE payload shapes more than once.
-// The delta extractor below tries several common keys defensively.
+// Known fragility: Claude has changed SSE payload shapes more than once, so the
+// reducer below stays deliberately defensive across several known formats.
 
 import { defineContentScript } from "wxt/sandbox";
-import { SMRITI_TAG, type InjectToContentMessage } from "../capture/messages";
-import type { CaptureEvent } from "@smriti/shared";
+import { sourceById } from "../lib/connectors/registry";
+import {
+  installFetchInterceptor,
+  type StreamState,
+} from "../lib/connectors/fetch-interceptor";
+
+// Completion / retry / append_message endpoints; the conversation id is the
+// capture group. Covers:
+//   /api/organizations/{org}/chat_conversations/{conv}/completion
+//   /api/organizations/{org}/chat_conversations/{conv}/retry_completion
+//   /api/organizations/{org}/chat_conversations/{conv}/append_message
+//   /api/chat_conversations/{conv}/completion          (org-less variant)
+const COMPLETION_RE =
+  /\/api\/(?:organizations\/[^/]+\/)?chat_conversations\/([^/?]+)\/(?:completion|retry_completion|append_message)/;
 
 export default defineContentScript({
-  matches: ["https://claude.ai/*"],
+  matches: sourceById("claude")!.origins,
   world: "MAIN",
   runAt: "document_start",
   main() {
-    // eslint-disable-next-line no-console
-    console.debug("[smriti] claude-main: fetch interceptor active");
+    installFetchInterceptor({
+      sourceId: "claude",
 
-    // Matches Claude.ai completion / retry / append_message endpoints.
-    // We extract the conv-id from whichever capture group matched.
-    // Covers:
-    //   /api/organizations/{org}/chat_conversations/{conv}/completion
-    //   /api/organizations/{org}/chat_conversations/{conv}/retry_completion
-    //   /api/organizations/{org}/chat_conversations/{conv}/append_message (newer)
-    //   /api/chat_conversations/{conv}/completion  (org-less variant)
-    const COMPLETION_RE =
-      /\/api\/(?:organizations\/[^/]+\/)?chat_conversations\/([^/?]+)\/(?:completion|retry_completion|append_message)/;
+      matchRequest(url) {
+        const m = url.match(COMPLETION_RE);
+        return m ? { convId: m[1]! } : null;
+      },
 
-    const origFetch = window.fetch.bind(window);
-
-    window.fetch = async function smritiFetch(
-      input: RequestInfo | URL,
-      init?: RequestInit,
-    ): Promise<Response> {
-      let url: string;
-      if (typeof input === "string") url = input;
-      else if (input instanceof Request) url = input.url;
-      else url = input.toString();
-
-      const m = url.match(COMPLETION_RE);
-      if (!m) return origFetch(input, init);
-
-      const convId = m[1]!;
-      // Best-effort user-text extraction from request body.
-      const userText = await extractUserText(input, init);
-
-      const res = await origFetch(input, init);
-
-      // Tee the response so the page still gets its stream untouched.
-      try {
-        const cloned = res.clone();
-        void consumeStream(cloned, convId, userText, url);
-      } catch (e) {
-        emitError("clone failed", e);
-      }
-
-      return res;
-    };
-
-    async function extractUserText(
-      input: RequestInfo | URL,
-      init?: RequestInit,
-    ): Promise<string | null> {
-      try {
-        let bodyText: string | null = null;
-        if (init?.body) {
-          if (typeof init.body === "string") {
-            bodyText = init.body;
-          } else if (init.body instanceof Blob) {
-            bodyText = await init.body.text();
-          } else if (init.body instanceof ArrayBuffer) {
-            bodyText = new TextDecoder().decode(init.body);
-          } else if (init.body instanceof FormData) {
-            return null;
-          } else if (init.body instanceof URLSearchParams) {
-            bodyText = init.body.toString();
-          }
-        } else if (input instanceof Request) {
-          bodyText = await input.clone().text();
-        }
-        if (!bodyText) return null;
-        const json = JSON.parse(bodyText) as Record<string, unknown>;
-
-        // Modern Claude API (2025+): { messages: [{role, content: [{type:"text",text:"..."}]}] }
+      readRequest(json) {
+        // Modern Claude API (2025+):
+        //   { messages: [{ role, content: [{ type: "text", text }] }] }
         // Iterate from the END — the last user message is the freshly typed one.
         if (Array.isArray(json.messages)) {
           const msgs = json.messages as Array<{
@@ -96,18 +50,21 @@ export default defineContentScript({
           for (let i = msgs.length - 1; i >= 0; i--) {
             const m = msgs[i];
             if (!m || m.role !== "user") continue;
-            if (typeof m.content === "string" && m.content.length > 0) return m.content;
+            if (typeof m.content === "string" && m.content.length > 0) {
+              return { userText: m.content };
+            }
             if (Array.isArray(m.content)) {
-              const parts = m.content
+              const joined = m.content
                 .filter((b) => b?.type === "text" && typeof b.text === "string")
-                .map((b) => b.text ?? "");
-              const joined = parts.join("\n").trim();
-              if (joined.length > 0) return joined;
+                .map((b) => b.text ?? "")
+                .join("\n")
+                .trim();
+              if (joined.length > 0) return { userText: joined };
             }
           }
         }
 
-        // Legacy Claude API shapes (kept for compatibility).
+        // Legacy shapes, kept for compatibility.
         const legacy = [
           json.prompt,
           (json.message as { text?: string } | undefined)?.text,
@@ -115,154 +72,55 @@ export default defineContentScript({
           json.text,
         ];
         for (const c of legacy) {
-          if (typeof c === "string" && c.length > 0) return c;
+          if (typeof c === "string" && c.length > 0) return { userText: c };
         }
-        return null;
-      } catch {
-        return null;
-      }
-    }
+        return {};
+      },
 
-    async function consumeStream(
-      res: Response,
-      convId: string,
-      userText: string | null,
-      url: string,
-    ): Promise<void> {
-      const body = res.body;
-      if (!body) return;
-      const reader = body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let assistantAccum = "";
-      let model: string | null = null;
+      reduceEvent(payload, state: StreamState) {
+        if (typeof payload !== "object" || payload === null) return;
+        const obj = payload as Record<string, unknown>;
+        const eventType = typeof obj.type === "string" ? obj.type : "";
 
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        // SSE event delimiter is a blank line.
-        let idx: number;
-        while ((idx = buffer.indexOf("\n\n")) >= 0) {
-          const eventBlock = buffer.slice(0, idx);
-          buffer = buffer.slice(idx + 2);
-          const { text, modelHint } = parseSseEvent(eventBlock);
-          if (text) assistantAccum += text;
-          if (modelHint && !model) model = modelHint;
-        }
-      }
-
-      const observedAt = new Date().toISOString();
-      const events: CaptureEvent[] = [];
-
-      events.push({
-        kind: "conversation_seen",
-        platform: "claude",
-        platform_conv_id: convId,
-        title: getCurrentChatTitle(),
-        url: `https://claude.ai/chat/${convId}`,
-        observed_at: observedAt,
-      });
-
-      if (userText && userText.length > 0) {
-        events.push({
-          kind: "message_appended",
-          platform: "claude",
-          platform_conv_id: convId,
-          role: "user",
-          content_text: userText,
-          model: model ?? undefined,
-          created_at: observedAt,
-          position: Date.now(),
-        });
-      }
-
-      if (assistantAccum.length > 0) {
-        events.push({
-          kind: "message_appended",
-          platform: "claude",
-          platform_conv_id: convId,
-          role: "assistant",
-          content_text: assistantAccum,
-          model: model ?? undefined,
-          created_at: new Date().toISOString(),
-          position: Date.now() + 1,
-        });
-      }
-
-      emit(events);
-    }
-
-    function parseSseEvent(block: string): { text: string; modelHint: string | null } {
-      let text = "";
-      let modelHint: string | null = null;
-      for (const line of block.split("\n")) {
-        if (!line.startsWith("data:")) continue;
-        const payload = line.slice(5).trim();
-        if (!payload || payload === "[DONE]") continue;
-        try {
-          const obj = JSON.parse(payload) as Record<string, unknown>;
-          const eventType = typeof obj.type === "string" ? obj.type : "";
-
-          // Extract model hint from wherever it appears.
-          if (typeof obj.model === "string" && !modelHint) modelHint = obj.model;
-          if (
-            eventType === "message_start" &&
-            typeof (obj.message as Record<string, unknown> | undefined)?.model === "string" &&
-            !modelHint
-          ) {
-            modelHint = ((obj.message as Record<string, unknown>).model) as string;
+        // Model hint, from wherever it shows up first.
+        if (typeof obj.model === "string" && !state.model) state.model = obj.model;
+        const startMsg = obj.message as Record<string, unknown> | undefined;
+        if (eventType === "message_start" && startMsg) {
+          if (typeof startMsg.model === "string" && !state.model) {
+            state.model = startMsg.model;
           }
-
-          // Use first-wins semantics: pick exactly one text fragment per event.
-          // Modern Claude streaming (content_block_delta):
-          //   {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"..."}}
-          if (eventType === "content_block_delta") {
-            const delta = obj.delta as { type?: string; text?: string } | undefined;
-            if (delta?.type === "text_delta" && typeof delta.text === "string") {
-              text += delta.text;
-              continue;
-            }
+          if (typeof startMsg.id === "string" && !state.assistantMsgId) {
+            state.assistantMsgId = startMsg.id;
           }
-
-          // Older Claude streaming formats (kept for compatibility):
-          // { completion: "..." }  or  { delta: { text: "..." } }
-          if (typeof obj.completion === "string") { text += obj.completion; continue; }
-          if (typeof obj.text === "string" && obj.text) { text += obj.text; continue; }
-          const delta = obj.delta as { text?: string } | undefined;
-          if (typeof delta?.text === "string") { text += delta.text; continue; }
-        } catch {
-          // Not JSON — ignore.
         }
-      }
-      return { text, modelHint };
-    }
 
-    function getCurrentChatTitle(): string | undefined {
-      // document.title is usually "Title - Claude" once Claude sets it.
-      const t = document.title;
-      if (!t || t === "Claude") return undefined;
-      return t.replace(/\s*[-–|]\s*Claude.*$/i, "").trim() || undefined;
-    }
+        // First-wins: exactly one text fragment per frame.
+        // Modern streaming:
+        //   {"type":"content_block_delta","delta":{"type":"text_delta","text":"…"}}
+        if (eventType === "content_block_delta") {
+          const delta = obj.delta as { type?: string; text?: string } | undefined;
+          if (delta?.type === "text_delta" && typeof delta.text === "string") {
+            state.assistantText += delta.text;
+            return;
+          }
+        }
 
-    function emit(events: CaptureEvent[]): void {
-      if (events.length === 0) return;
-      const msg: InjectToContentMessage = {
-        smriti: SMRITI_TAG,
-        source: "claude-inject",
-        events,
-      };
-      window.postMessage(msg, window.location.origin);
-    }
+        // Older formats: { completion } | { text } | { delta: { text } }
+        if (typeof obj.completion === "string") {
+          state.assistantText += obj.completion;
+          return;
+        }
+        if (typeof obj.text === "string" && obj.text) {
+          state.assistantText += obj.text;
+          return;
+        }
+        const delta = obj.delta as { text?: string } | undefined;
+        if (typeof delta?.text === "string") state.assistantText += delta.text;
+      },
 
-    function emitError(label: string, err: unknown): void {
-      try {
-        // eslint-disable-next-line no-console
-        console.warn(`[smriti:inject] ${label}`, err);
-      } catch {
-        /* noop */
-      }
-    }
+      conversationUrl: (convId) => `https://claude.ai/chat/${convId}`,
+      titleSuffix: /\s*[-–|]\s*Claude.*$/i,
+      bareTitle: "Claude",
+    });
   },
 });

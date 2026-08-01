@@ -9,20 +9,14 @@
 //   • Toolbar icon → opens options page.
 
 import { defineBackground } from "wxt/sandbox";
-import type { CaptureEvent, Platform } from "@smriti/shared";
+import type { CaptureEvent, SourceId } from "@smriti/shared";
+import { hostsForSource, sourceForHostname } from "../lib/connectors/registry";
 
 const OFFSCREEN_URL = chrome.runtime.getURL("/offscreen.html");
 
 // Per-host capture pause. Persisted in chrome.storage.local.
 const PAUSED_HOSTS_KEY = "smriti:paused-hosts";
 const pausedHosts = new Set<string>();
-
-function platformToHost(p: string): string | null {
-  if (p === "claude") return "claude.ai";
-  if (p === "chatgpt") return "chatgpt.com";
-  if (p === "gemini") return "gemini.google.com";
-  return null;
-}
 
 void browser.storage.local.get(PAUSED_HOSTS_KEY).then((o) => {
   const list = o[PAUSED_HOSTS_KEY];
@@ -35,17 +29,31 @@ function persistPausedHosts(): void {
 
 // Notify any open tabs on `host` immediately, so the sidebar's composer
 // watch doesn't wait on its 60s poll to react to a Settings toggle.
+//
+// Also notifies the source's *other* hosts: pausing chatgpt.com must reach an
+// open chat.openai.com tab too, since both feed the same source.
 async function broadcastCaptureToggle(host: string, off: boolean): Promise<void> {
+  const source = sourceForHostname(host);
+  const targets = new Set(source ? hostsForSource(source.id) : [host]);
+  targets.add(host);
+
   const tabs = await browser.tabs.query({});
   for (const tab of tabs) {
     if (!tab.id || !tab.url) continue;
     try {
-      if (new URL(tab.url).hostname.replace(/^www\./, "") !== host) continue;
+      const h = new URL(tab.url).hostname.replace(/^www\./, "");
+      if (!targets.has(h) && !sameSource(h, targets)) continue;
     } catch {
       continue;
     }
     browser.tabs.sendMessage(tab.id, { kind: "capture_toggle", host, off }).catch(() => {});
   }
+}
+
+/** True if hostname `h` is a subdomain of one of `targets`. */
+function sameSource(h: string, targets: Set<string>): boolean {
+  for (const t of targets) if (h.endsWith(`.${t}`)) return true;
+  return false;
 }
 
 // ─── Offscreen document lifecycle ────────────────────────────────────────────
@@ -244,7 +252,7 @@ export default defineBackground(() => {
       // ── Start backfill (from options page) ───────────────────────────────
 
       if (kind === "start_backfill") {
-        const platform = (msg as { platform: Platform }).platform;
+        const platform = (msg as { platform: SourceId }).platform;
         sendToOffscreen({ type: "start_backfill", platform })
           .then((res) => {
             const r = (res as { result?: { resuming?: boolean } })?.result ?? res as { resuming?: boolean };
@@ -316,8 +324,12 @@ async function handleCapture(events: CaptureEvent[]): Promise<{ accepted: number
   if (!events || events.length === 0) return { accepted: 0 };
 
   const filtered = events.filter((e) => {
-    const host = platformToHost(e.platform);
-    return !host || !pausedHosts.has(host);
+    // A source can serve several hosts (ChatGPT: chatgpt.com and the legacy
+    // chat.openai.com). Pausing any one of them pauses the source, so a user
+    // who pauses on the host they can see isn't silently still captured on the
+    // other.
+    const hosts = hostsForSource(e.platform);
+    return hosts.length === 0 || !hosts.some((h) => pausedHosts.has(h));
   });
   if (filtered.length === 0) return { accepted: 0 };
 

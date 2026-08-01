@@ -9,6 +9,7 @@
 import type { BackfillProgress, BackfillState, Platform, BackfillJobStatus, CaptureEvent } from "@smriti/shared";
 import { dbAll, dbGet, dbRun, markDirty } from "./db.js";
 import { ingestEvents } from "./ingest.js";
+import { sourceById } from "./connectors/registry.js";
 
 const BASE = "https://claude.ai";
 const DETAIL_DELAY_MS = 2_000;
@@ -65,7 +66,10 @@ export function getBackfillStatuses(filter?: Platform): BackfillJobStatus[] {
 }
 
 export async function startBackfill(platform: Platform): Promise<{ resuming: boolean }> {
-  if (platform !== "claude" && platform !== "chatgpt") {
+  // The registry decides, not a hardcoded pair — same reason every origin list
+  // is derived from it. A source that cannot be walked (Gemini, WhatsApp) says
+  // so in its capabilities.
+  if (!sourceById(platform)?.capabilities.backfill) {
     throw new Error(`backfill for ${platform} not implemented yet`);
   }
   if (active.has(platform)) return { resuming: true };
@@ -334,7 +338,10 @@ function chatGptConvToEvents(detail: Record<string, unknown>, convId: string): C
   }
   msgs.sort((a, b) => a.ts - b.ts);
 
-  for (const m of msgs) {
+  // Backfill reads the whole history in order, so unlike a live connector it
+  // genuinely knows each message's turn index — pass it as authoritative rather
+  // than letting ingest re-derive it from MAX(position).
+  msgs.forEach((m, index) => {
     const ts = new Date(m.ts).toISOString();
     events.push({
       kind: "message_appended",
@@ -344,9 +351,11 @@ function chatGptConvToEvents(detail: Record<string, unknown>, convId: string): C
       role: m.role as "user" | "assistant",
       content_text: m.text,
       created_at: ts,
-      position: m.ts,
+      created_at_source: "platform",
+      position: index,
+      position_authoritative: true,
     });
-  }
+  });
   return events;
 }
 
@@ -394,6 +403,10 @@ function convToEvents(detail: Record<string, unknown>, fallbackId: string): Capt
     },
   ];
 
+  // As above: history is read in order, so the index is the true turn index.
+  // `position` counts only messages we actually emit, so skipped entries don't
+  // leave holes.
+  let position = 0;
   for (const m of messages) {
     const text = extractText(m);
     if (!text) continue;
@@ -409,7 +422,9 @@ function convToEvents(detail: Record<string, unknown>, fallbackId: string): Capt
       content_text: text,
       model: (m.model ?? detail.model) as string | undefined,
       created_at: ts,
-      position: Date.parse(ts) || Date.now(),
+      created_at_source: m.created_at ? "platform" : "observed",
+      position: position++,
+      position_authoritative: true,
     });
   }
   return events;

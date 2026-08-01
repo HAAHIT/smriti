@@ -5,10 +5,12 @@ import type { CaptureEvent } from "@smriti/shared";
 
 export const SMRITI_TAG = "smriti:v1";
 
-export type InjectSource =
-  | "claude-inject"
-  | "chatgpt-inject"
-  | "gemini-inject";
+/**
+ * `<sourceId>-inject`. Open rather than a closed union: sources are declared in
+ * lib/connectors/registry.ts, and adding one must not require editing this
+ * file. The `-inject` suffix is what `isInjectMessage` actually validates.
+ */
+export type InjectSource = `${string}-inject`;
 
 export interface InjectToContentMessage {
   smriti: typeof SMRITI_TAG;

@@ -16,37 +16,26 @@ import type {
   Platform,
   SearchHit,
 } from "@smriti/shared";
+import {
+  LEGACY_SOURCE_LABELS,
+  resolveConversation,
+  sourceById,
+  sourceForHostname,
+} from "./connectors/registry.js";
 
 
+// Registry-backed. The URL patterns used to be written out again here, which
+// is how the sidebar ended up unable to recognise chat.openai.com while the
+// ChatGPT connector captured it happily.
 export function detectCurrentChat(url: string): { platform: Platform; platformConvId: string } | null {
-  try {
-    const u = new URL(url);
-    if (u.hostname.endsWith("claude.ai")) {
-      const m = u.pathname.match(/^\/chat\/([0-9a-f-]{8,})/i);
-      if (m && m[1]) return { platform: "claude", platformConvId: m[1] };
-      return null;
-    }
-    if (u.hostname.endsWith("chatgpt.com")) {
-      const m = u.pathname.match(/\/c\/([\w-]{8,})/);
-      if (m && m[1]) return { platform: "chatgpt", platformConvId: m[1] };
-      return null;
-    }
-    if (u.hostname.endsWith("gemini.google.com")) {
-      const m = u.pathname.match(/\/app\/([\w-]{8,})/);
-      if (m && m[1]) return { platform: "gemini", platformConvId: m[1] };
-      return null;
-    }
-  } catch { /* malformed url */ }
-  return null;
+  const hit = resolveConversation(url);
+  return hit ? { platform: hit.source.id, platformConvId: hit.platformConvId } : null;
 }
 
-// Which of the three supported hosts we're running on. The content script
-// only matches these three, so this always resolves.
+// Which source we're running on. The sidebar only mounts on registry origins,
+// so this normally resolves; `claude` remains the historical fallback.
 export function currentPlatform(): Platform {
-  const h = location.hostname;
-  if (h.endsWith("chatgpt.com")) return "chatgpt";
-  if (h.endsWith("gemini.google.com")) return "gemini";
-  return "claude";
+  return sourceForHostname(location.hostname)?.id ?? "claude";
 }
 
 // Pre-filled "report a broken site" GitHub issue link — selectors on these
@@ -60,13 +49,12 @@ export function reportIssueUrl(platform: Platform): string {
 }
 
 export function providerBadge(p: string): { label: string; color: string } {
-  switch (p) {
-    case "claude":      return { label: "Claude",      color: "#c96442" };
-    case "chatgpt":     return { label: "ChatGPT",     color: "#1f7a64" };
-    case "gemini":      return { label: "Gemini",      color: "#3b6cb5" };
-    case "claude_code": return { label: "Code",        color: "#6d5fa6" };
-    default:            return { label: "Other",        color: "#888" };
-  }
+  const source = sourceById(p);
+  if (source) return { label: source.label, color: source.color };
+  // Sources with rows in the archive but no live connector (e.g. claude_code).
+  const legacy = LEGACY_SOURCE_LABELS[p];
+  if (legacy) return legacy;
+  return { label: "Other", color: "#888" };
 }
 
 export function memoryKindMeta(kind: string): { label: string; color: string } {
