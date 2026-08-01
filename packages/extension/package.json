@@ -17,6 +17,9 @@
     "test:okf": "tsx scripts/test-okf-renderer.ts",
     "test:connectors": "tsx scripts/test-connectors.ts",
     "test:migrations": "tsx scripts/test-migrations.ts",
+    "test:segment": "tsx scripts/test-segment.ts",
+    "test:fts-query": "tsx scripts/test-fts-query.ts",
+    "test:vectors": "tsx scripts/test-vectors.ts",
     "fetch:model": "node scripts/fetch-model.mjs",
     "postinstall": "wxt prepare"
   },

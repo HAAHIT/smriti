@@ -62,8 +62,23 @@ jobs:
         working-directory: packages/extension
         run: npm run test:connectors
 
+      - name: Test — episode segmentation
+        working-directory: packages/extension
+        run: npm run test:segment
+
+      - name: Test — FTS query builder
+        working-directory: packages/extension
+        run: npm run test:fts-query
+
+      # The episode vectors live outside SQLite, so no migration test covers
+      # their file format or their index bookkeeping. This is what does.
+      - name: Test — vector store
+        working-directory: packages/extension
+        run: npm run test:vectors
+
       # Runs the real migration SQL against real SQLite. This one guards user
-      # data: 006 rewrites every message's position and author.
+      # data: 006 rewrites every message's position and author, and 007 drops
+      # and rebuilds both FTS indexes under a new tokenizer.
       - name: Test — migrations
         working-directory: packages/extension
         run: npm run test:migrations

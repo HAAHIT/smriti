@@ -307,7 +307,260 @@ console.log("\n=== 006: FTS integrity across the trigger swap ===\n");
   db.close();
 }
 
-// ─── 6. Full chain from empty, and idempotency ───────────────────────────────
+// ─── 6. Migration 007: the FTS tokenizer swap ────────────────────────────────
+//
+// 007 DROPs messages_fts and memories_fts and recreates them with a different
+// tokenizer. Both are external-content tables, so the content itself is safe —
+// but the rebuild, the triggers that point at them, and the tokenizer's actual
+// behaviour are all things a code read cannot confirm.
+//
+// The tokenizer change is the point of the migration: `porter unicode61` was an
+// ENGLISH stemmer applied to an archive that is substantially not English.
+
+function freshPre007(): Database {
+  const db = new SQL.Database();
+  db.run("PRAGMA foreign_keys = ON");
+  applyThrough(db, "006_sources.sql");
+  return db;
+}
+
+function apply007(db: Database): void {
+  const entry = SCHEMA.find(([id]) => id === "007_episodes.sql");
+  if (!entry) throw new Error("007_episodes.sql missing from SCHEMA");
+  db.run(entry[1]);
+}
+
+/** Messages and memories in the pre-007 shape, with terms the swap is about. */
+function seed007(db: Database): void {
+  db.run(`
+    INSERT INTO conversations (id, platform, platform_conv_id, title, url, started_at, last_message_at, ingested_at)
+    VALUES ('c1', 'claude', 'cc1', 'First', 'u1', '2026-01-01T00:00:00Z', '2026-01-01T03:00:00Z', '2026-01-01T00:00:00Z');
+  `);
+  const rows: Array<[string, string, string]> = [
+    ["m1", "user", "I was running the postgres migration"],
+    ["m2", "assistant", "We met at the café in Kraków"],
+    ["m3", "user", "मुझे याद है"],
+  ];
+  for (const [id, role, text] of rows) {
+    db.run(
+      `INSERT INTO messages (id, conversation_id, role, content_text, created_at, position, content_hash)
+       VALUES (?, 'c1', ?, ?, '2026-01-01T00:00:00Z', ?, ?)`,
+      [id, role, text, rows.findIndex((r) => r[0] === id), `h-${id}`],
+    );
+  }
+  db.run(
+    `INSERT INTO memories (id, kind, text, norm_text, created_at, updated_at)
+     VALUES ('mem1', 'preference', 'I prefer running tests before pushing',
+             'i prefer running tests before pushing',
+             '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+  );
+}
+
+console.log("\n=== 007: messages_fts rebuild ===\n");
+{
+  const db = freshPre007();
+  seed007(db);
+
+  // Baseline: confirm the OLD index really did stem, so the assertions below
+  // are measuring a change rather than restating something already true.
+  check(
+    "(pre-007) porter stemmed 'running' so a search for 'run' matched",
+    one<{ n: number }>(db, "SELECT COUNT(*) AS n FROM messages_fts WHERE messages_fts MATCH 'run'")
+      ?.n === 1,
+  );
+
+  apply007(db);
+
+  check(
+    "existing messages survive the drop and rebuild",
+    one<{ n: number }>(db, "SELECT COUNT(*) AS n FROM messages_fts WHERE messages_fts MATCH 'postgres'")
+      ?.n === 1,
+  );
+  check(
+    "every seeded message is back in the index",
+    one<{ n: number }>(db, "SELECT COUNT(*) AS n FROM messages_fts")?.n === 3,
+  );
+  check(
+    "the stemmer is gone — a bare 'run' no longer matches 'running'",
+    one<{ n: number }>(db, "SELECT COUNT(*) AS n FROM messages_fts WHERE messages_fts MATCH 'run'")
+      ?.n === 0,
+  );
+  check(
+    "...and the prefix term that lib/fts-query.ts emits instead does match",
+    one<{ n: number }>(db, "SELECT COUNT(*) AS n FROM messages_fts WHERE messages_fts MATCH 'run*'")
+      ?.n === 1,
+  );
+  check(
+    "the prefix index makes a short query reach a longer word",
+    one<{ n: number }>(db, "SELECT COUNT(*) AS n FROM messages_fts WHERE messages_fts MATCH 'post*'")
+      ?.n === 1,
+  );
+  check(
+    "remove_diacritics 2 folds accents — 'cafe' matches 'café'",
+    one<{ n: number }>(db, "SELECT COUNT(*) AS n FROM messages_fts WHERE messages_fts MATCH 'cafe'")
+      ?.n === 1,
+  );
+  check(
+    "...including inside a word — 'krakow' matches 'Kraków'",
+    // The level-1 folding porter unicode61 defaulted to does NOT cover ó.
+    one<{ n: number }>(db, "SELECT COUNT(*) AS n FROM messages_fts WHERE messages_fts MATCH 'krakow'")
+      ?.n === 1,
+  );
+  check(
+    "Devanagari is indexed and matchable",
+    one<{ n: number }>(db, "SELECT COUNT(*) AS n FROM messages_fts WHERE messages_fts MATCH 'याद'")
+      ?.n === 1,
+  );
+
+  // The three triggers survive by name; confirm each still drives the new table.
+  db.run(
+    `INSERT INTO messages (id, conversation_id, role, content_text, created_at, position, content_hash)
+     VALUES ('m9', 'c1', 'user', 'zebra', '2026-01-01T05:00:00Z', 9, 'h-m9')`,
+  );
+  check(
+    "the insert trigger still indexes into the rebuilt table",
+    one<{ n: number }>(db, "SELECT COUNT(*) AS n FROM messages_fts WHERE messages_fts MATCH 'zebra'")
+      ?.n === 1,
+  );
+  db.run("UPDATE messages SET content_text='giraffe' WHERE id='m9'");
+  check(
+    "the update trigger still reindexes into the rebuilt table",
+    one<{ n: number }>(db, "SELECT COUNT(*) AS n FROM messages_fts WHERE messages_fts MATCH 'giraffe'")
+      ?.n === 1 &&
+      one<{ n: number }>(db, "SELECT COUNT(*) AS n FROM messages_fts WHERE messages_fts MATCH 'zebra'")
+        ?.n === 0,
+  );
+  db.run("DELETE FROM messages WHERE id='m9'");
+  check(
+    "the delete trigger still removes from the rebuilt table",
+    one<{ n: number }>(db, "SELECT COUNT(*) AS n FROM messages_fts WHERE messages_fts MATCH 'giraffe'")
+      ?.n === 0,
+  );
+  db.close();
+}
+
+console.log("\n=== 007: memories_fts rebuild and trigger scoping ===\n");
+{
+  const db = freshPre007();
+  seed007(db);
+  apply007(db);
+
+  check(
+    "existing memories survive the rebuild",
+    one<{ n: number }>(db, "SELECT COUNT(*) AS n FROM memories_fts WHERE memories_fts MATCH 'tests'")
+      ?.n === 1,
+  );
+  check(
+    "memories get the same tokenizer as messages — no bare-stem match",
+    one<{ n: number }>(db, "SELECT COUNT(*) AS n FROM memories_fts WHERE memories_fts MATCH 'run'")
+      ?.n === 0,
+  );
+  check(
+    "...and the same prefix behaviour, so recall and search agree",
+    one<{ n: number }>(db, "SELECT COUNT(*) AS n FROM memories_fts WHERE memories_fts MATCH 'run*'")
+      ?.n === 1,
+  );
+
+  // The reason memories_au was re-scoped: touchMemories() runs on every single
+  // injection, and the unscoped trigger rewrote the FTS row each time for
+  // columns FTS does not even index.
+  db.run("UPDATE memories SET last_used_at='2026-06-01T00:00:00Z', use_count=use_count+1 WHERE id='mem1'");
+  check(
+    "a use-tracking update leaves the memory findable",
+    one<{ n: number }>(db, "SELECT COUNT(*) AS n FROM memories_fts WHERE memories_fts MATCH 'tests'")
+      ?.n === 1,
+  );
+  check(
+    "a use-tracking update does not duplicate the FTS row",
+    one<{ n: number }>(db, "SELECT COUNT(*) AS n FROM memories_fts")?.n === 1,
+  );
+  db.run("UPDATE memories SET pinned=1 WHERE id='mem1'");
+  check(
+    "pinning does not disturb the index either",
+    one<{ n: number }>(db, "SELECT COUNT(*) AS n FROM memories_fts WHERE memories_fts MATCH 'tests'")
+      ?.n === 1,
+  );
+
+  // ...but an edit to an INDEXED column must still reindex.
+  db.run("UPDATE memories SET text='I prefer walruses' WHERE id='mem1'");
+  check(
+    "editing the memory text still reindexes (new term present)",
+    one<{ n: number }>(db, "SELECT COUNT(*) AS n FROM memories_fts WHERE memories_fts MATCH 'walruses'")
+      ?.n === 1,
+  );
+  check(
+    "editing the memory text still reindexes (old term gone)",
+    one<{ n: number }>(db, "SELECT COUNT(*) AS n FROM memories_fts WHERE memories_fts MATCH 'tests'")
+      ?.n === 0,
+  );
+  db.close();
+}
+
+console.log("\n=== 007: episodes ===\n");
+{
+  const db = freshPre007();
+  seed007(db);
+  apply007(db);
+
+  db.run(
+    `INSERT INTO episodes
+       (id, conversation_id, space_id, ordinal, position_start, position_end,
+        started_at, ended_at, gist, gist_source, msg_count)
+     VALUES ('c1:0', 'c1', NULL, 0, 0, 2,
+             '2026-01-01T00:00:00Z', '2026-01-01T03:00:00Z',
+             'running the postgres migration', 'extractive', 3)`,
+  );
+  check(
+    "an episode gist is indexed on insert",
+    one<{ n: number }>(db, "SELECT COUNT(*) AS n FROM episodes_fts WHERE episodes_fts MATCH 'postgres'")
+      ?.n === 1,
+  );
+  check(
+    "episodes_fts uses the Phase 2 tokenizer too",
+    one<{ n: number }>(db, "SELECT COUNT(*) AS n FROM episodes_fts WHERE episodes_fts MATCH 'run'")
+      ?.n === 0 &&
+      one<{ n: number }>(db, "SELECT COUNT(*) AS n FROM episodes_fts WHERE episodes_fts MATCH 'run*'")
+        ?.n === 1,
+  );
+
+  db.run("UPDATE episodes SET gist='an abstractive summary' WHERE id='c1:0'");
+  check(
+    "editing a gist reindexes",
+    one<{ n: number }>(db, "SELECT COUNT(*) AS n FROM episodes_fts WHERE episodes_fts MATCH 'abstractive'")
+      ?.n === 1 &&
+      one<{ n: number }>(db, "SELECT COUNT(*) AS n FROM episodes_fts WHERE episodes_fts MATCH 'postgres'")
+        ?.n === 0,
+  );
+
+  let threw = false;
+  try {
+    db.run(
+      `INSERT INTO episodes
+         (id, conversation_id, space_id, ordinal, position_start, position_end,
+          started_at, ended_at, gist, gist_source, msg_count)
+       VALUES ('c1:dup', 'c1', NULL, 0, 0, 1, 'a', 'b', 'dup ordinal', 'extractive', 2)`,
+    );
+  } catch {
+    threw = true;
+  }
+  check("(conversation_id, ordinal) is unique", threw);
+
+  // Deleting the conversation must take its episodes with it — rebuildEpisodes
+  // relies on nothing being left behind.
+  db.run("DELETE FROM messages WHERE conversation_id='c1'");
+  db.run("DELETE FROM conversations WHERE id='c1'");
+  check(
+    "episodes cascade when their conversation is deleted",
+    one<{ n: number }>(db, "SELECT COUNT(*) AS n FROM episodes")?.n === 0,
+  );
+  check(
+    "the cascade reaches the FTS index too",
+    one<{ n: number }>(db, "SELECT COUNT(*) AS n FROM episodes_fts")?.n === 0,
+  );
+  db.close();
+}
+
+// ─── 7. Full chain from empty, and idempotency ───────────────────────────────
 
 console.log("\n=== full migration chain ===\n");
 {
@@ -330,7 +583,7 @@ console.log("\n=== full migration chain ===\n");
     db,
     "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
   ).map((r) => r.name);
-  for (const t of ["spaces", "people", "person_identities"]) {
+  for (const t of ["spaces", "people", "person_identities", "episodes", "entities", "entity_mentions"]) {
     check(`table ${t} exists`, tables.includes(t));
   }
   db.close();

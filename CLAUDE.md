@@ -77,8 +77,23 @@ Extension internals:
   embeddings, search, memory. All RPCs dispatch here.
 - `lib/db.ts` — sql.js + OPFS persistence (debounced flush). Synchronous query
   helpers `dbAll/dbGet/dbRun`.
-- `lib/search.ts` — hybrid FTS5 + vector RRF search over messages.
-- `lib/outline.ts` — embedding-based conversation chaptering (no LLM).
+- `lib/search.ts` — hybrid RRF search. The FTS5 lane matches **messages** (an
+  exact token lives in exactly one). The vector lane matches **episodes**, then
+  resolves each hit down to the best message inside it.
+- `lib/segment.ts` — **pure** episode segmentation: time gaps and a size cap
+  always, cosine-drop refinement when enough messages carry a vector. Shared by
+  `outline.ts` and `episodes.ts`. `npm run test:segment`.
+- `lib/episodes.ts` — builds/embeds/queries the `episodes` table.
+- `lib/vectors.ts` — the int8 episode-vector store, held **outside SQLite** in
+  its own OPFS file. `lib/db.ts` persists by serialising the whole database on
+  every flush, so vectors kept inside it would be rewritten wholesale every few
+  seconds. Needs `initVectors()` at boot and `flushVectors()` alongside
+  `flushToOpfs()` — both wired in `lib/offscreen-main.ts`. `npm run test:vectors`.
+- `lib/fts-query.ts` — **pure** FTS5 MATCH builder, shared by search and memory
+  recall. It must agree with the tokenizer in migration 007 or queries silently
+  return nothing. `npm run test:fts-query`.
+- `lib/outline.ts` — conversation chaptering (no LLM), now a thin layer over
+  `segment.ts`.
 - `entrypoints/sidebar.content.ts` — in-page panel (shadow DOM). The HERO surface.
   Rendering/state/styles/helpers live in `lib/sidebar-{types,styles,helpers,renderers}.ts`
   — the helpers and renderers are pure and have their own test suites.
@@ -99,7 +114,8 @@ Extension internals:
   robust fallbacks; `execCommand("insertText")` path for ProseMirror/Quill,
   native-setter path for textareas. `formatMemoryBlock()` builds the context block.
 - `lib/index-worker.ts` — background loop: embeds messages, runs extraction
-  sweeps, embeds memories.
+  sweeps, embeds memories, segments conversations into episodes and embeds
+  their gists. The episode stages are gated on `isVectorsReady()`.
 - Schema migration `003_memory.sql` in `lib/migrations.ts`
   (`memories`, `memory_embeddings`, `memories_fts`, `memory_meta`).
 
@@ -119,7 +135,7 @@ The loop: sidebar watches the host composer as you type → `recall_memories` RP
   `host_permissions` **and** the `connect-src` CSP in `wxt.config.ts` — the
   offscreen doc is an extension page, so CSP governs its `fetch()`.
 - Schema changes: append a new migration tuple to `SCHEMA` in `lib/migrations.ts`
-  (currently `001_init` … `006_sources`). Never edit a shipped migration.
+  (currently `001_init` … `007_episodes`). Never edit a shipped migration.
   `npm run test:migrations` runs the real SQL against real SQLite — add coverage
   there for anything that rewrites existing rows.
 - Adding a capture source: add a `SourceDef` to `lib/connectors/registry.ts` and
@@ -141,6 +157,9 @@ npm run test:sidebar-helpers     # pure sidebar helpers
 npm run test:sidebar-renderers   # pure sidebar renderers
 npm run test:okf                 # OKF markdown renderer
 npm run test:connectors          # source registry + connector SDK + msg identity
+npm run test:segment             # episode boundary rules (pure)
+npm run test:fts-query           # FTS5 MATCH builder (pure)
+npm run test:vectors             # int8 vector store: search, removal, file format
 npm run test:migrations          # real migration SQL against real SQLite
 npm run build            # → .output/chrome-mv3  (load unpacked in chrome://extensions)
 npm run dev              # live dev
@@ -158,7 +177,7 @@ run `npm run build`, because `prebuild` triggers the ~25 MB model fetch and
 anchors, snippets, and acceptance criteria) — work from it, in order.**
 `docs/REPO_STATUS.md` has the current, verified state and a suggested work order.
 
-**Green as of Phase 0** — the typecheck is clean, all five suites pass, and CI
+**Green as of Phase 2** — the typecheck is clean, all ten suites pass, and CI
 blocks merges. The build-health items that used to sit here are fixed.
 
 **Frozen (built, not shipped):**

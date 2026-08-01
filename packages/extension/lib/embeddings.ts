@@ -14,6 +14,13 @@ import { dbAll, dbGet, dbRun, markDirty } from "./db.js";
 export const EMBED_MODEL = "Xenova/all-MiniLM-L6-v2";
 export const EMBED_DIMS = 384;
 
+/**
+ * Shortest message worth embedding. "ok" / "thanks" carry no retrievable
+ * signal. This is the single definition of eligibility — getPendingMessages
+ * and countEmbedStatus must both use it, or the indexing indicator lies.
+ */
+export const MIN_EMBED_LEN = 8;
+
 // Fully local model — vendored into the package by `npm run fetch:model`.
 // Zero network calls at runtime.
 env.allowRemoteModels = false;
@@ -91,56 +98,56 @@ export function storeEmbedding(messageId: string, vec: Float32Array): void {
   markDirty();
 }
 
+/**
+ * Messages that are eligible to be embedded but aren't yet.
+ *
+ * `MIN_EMBED_LEN` is the eligibility rule — a message under 8 characters ("ok",
+ * "thanks") carries no retrievable signal and embedding it is wasted work.
+ * countEmbedStatus() below MUST apply the same rule; it used to compute
+ * `total - embedded` over ALL messages, so every short message counted as
+ * forever-pending and the "indexing" indicator could never reach zero.
+ */
 export function getPendingMessages(limit: number): Array<{ id: string; content_text: string }> {
   return dbAll<{ id: string; content_text: string }>(
     `SELECT m.id, m.content_text
      FROM messages m
      LEFT JOIN message_embeddings e ON e.message_id = m.id
      WHERE e.message_id IS NULL
-       AND length(m.content_text) >= 8
-     ORDER BY m.rowid DESC
+       AND length(m.content_text) >= ${MIN_EMBED_LEN}
+     -- Oldest first. This used to be rowid DESC, which meant that once a live
+     -- feed existed, newly captured messages jumped the queue forever and
+     -- imported history at the back was never reached at all.
+     ORDER BY m.rowid ASC
      LIMIT ?`,
     [limit],
   );
 }
 
 export function countEmbedStatus(): { total: number; embedded: number; pending: number } {
-  const total = (dbGet<{ n: number }>("SELECT COUNT(*) AS n FROM messages") ?? { n: 0 }).n;
-  const embedded = (dbGet<{ n: number }>("SELECT COUNT(*) AS n FROM message_embeddings") ?? { n: 0 }).n;
+  // "total" is the eligible population, not every row — see getPendingMessages.
+  const total = (dbGet<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM messages WHERE length(content_text) >= ${MIN_EMBED_LEN}`,
+  ) ?? { n: 0 }).n;
+  const embedded = (dbGet<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM message_embeddings e
+     JOIN messages m ON m.id = e.message_id
+     WHERE length(m.content_text) >= ${MIN_EMBED_LEN}`,
+  ) ?? { n: 0 }).n;
   return { total, embedded, pending: Math.max(0, total - embedded) };
 }
 
 // ─── Vector search ────────────────────────────────────────────────────────────
-
-export interface VecHit {
-  message_id: string;
-  conversation_id: string;
-  score: number;
-  content_text: string;
-}
-
-export function searchByVector(queryVec: Float32Array, topK: number): VecHit[] {
-  const rows = dbAll<{
-    message_id: string;
-    conversation_id: string;
-    content_text: string;
-    vec: Uint8Array;
-  }>(
-    `SELECT e.message_id, m.conversation_id, m.content_text, e.vec
-     FROM message_embeddings e
-     JOIN messages m ON m.id = e.message_id
-     WHERE e.model = ?`,
-    [EMBED_MODEL],
-  );
-
-  const hits: VecHit[] = [];
-  for (const r of rows) {
-    // sql.js returns BLOBs as Uint8Array — reinterpret as Float32Array.
-    const v = new Float32Array(r.vec.buffer, r.vec.byteOffset, r.vec.byteLength / 4);
-    let s = 0;
-    for (let i = 0; i < EMBED_DIMS; i++) s += (queryVec[i] as number) * (v[i] as number);
-    hits.push({ message_id: r.message_id, conversation_id: r.conversation_id, content_text: r.content_text, score: s });
-  }
-  hits.sort((a, b) => b.score - a.score);
-  return hits.slice(0, topK);
-}
+//
+// There used to be a `searchByVector()` here. It selected EVERY embedding row
+// joined to its message, materialised every message's full text, scored the lot
+// in a JS loop with no LIMIT and no pre-filter, then sorted and took the top k.
+// That is a full-corpus scan per keystroke, and it was the reason per-message
+// vectors could not scale.
+//
+// Its replacement is lib/vectors.ts `searchVectors()`, over episode vectors held
+// outside SQLite, with an optional `allow` set so callers can narrow by space or
+// time in SQL first. lib/search.ts is the caller.
+//
+// Per-message embeddings are still written and still useful — lib/segment.ts
+// uses them for the tier-2 boundary refinement — they are just no longer what a
+// query is scored against.

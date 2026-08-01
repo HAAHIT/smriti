@@ -425,5 +425,154 @@ CREATE TRIGGER messages_au AFTER UPDATE OF content_text, role, conversation_id O
   VALUES (new.rowid, new.content_text, new.role, new.conversation_id);
 END;
 `
+  ],
+  [
+    "007_episodes.sql",
+    `
+-- Phase 2 — the index unit.
+--
+-- A message is the wrong thing to embed. 500k messages at 384 float32 dims is
+-- 768 MB of vectors; at int8 inside SQLite it is still 192 MB, and lib/db.ts
+-- persists by serialising the whole database on every flush. An **episode** —
+-- a coherent stretch of ~15 messages — is ~1/15th as many vectors, and its
+-- gist is a *better* retrieval target for a vague query than any single
+-- message, because the gist contains topical words the individual messages
+-- never say.
+--
+-- Episode vectors themselves live outside SQLite entirely, in lib/vectors.ts.
+-- This table holds only the structure and the text.
+
+CREATE TABLE episodes (
+  id              TEXT PRIMARY KEY,          -- "<conversation_id>:<ordinal>"
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  space_id        TEXT REFERENCES spaces(id),
+  ordinal         INTEGER NOT NULL,          -- 0-based, per conversation
+  position_start  INTEGER NOT NULL,          -- inclusive, messages.position
+  position_end    INTEGER NOT NULL,          -- inclusive
+  started_at      TEXT NOT NULL,
+  ended_at        TEXT NOT NULL,
+  gist            TEXT NOT NULL,
+  gist_source     TEXT NOT NULL,             -- extractive | abstractive
+  msg_count       INTEGER NOT NULL,
+  UNIQUE (conversation_id, ordinal)
+);
+
+CREATE INDEX idx_ep_conv  ON episodes(conversation_id, ordinal);
+CREATE INDEX idx_ep_space ON episodes(space_id, started_at DESC);
+CREATE INDEX idx_ep_time  ON episodes(started_at DESC);
+
+-- FTS over gists, with the Phase 2 tokenizer (see the messages_fts rebuild
+-- below for why).
+CREATE VIRTUAL TABLE episodes_fts USING fts5(
+  gist,
+  conversation_id UNINDEXED,
+  content='episodes',
+  content_rowid='rowid',
+  tokenize='unicode61 remove_diacritics 2',
+  prefix='2 3'
+);
+
+CREATE TRIGGER episodes_ai AFTER INSERT ON episodes BEGIN
+  INSERT INTO episodes_fts(rowid, gist, conversation_id)
+  VALUES (new.rowid, new.gist, new.conversation_id);
+END;
+
+CREATE TRIGGER episodes_ad AFTER DELETE ON episodes BEGIN
+  INSERT INTO episodes_fts(episodes_fts, rowid, gist, conversation_id)
+  VALUES ('delete', old.rowid, old.gist, old.conversation_id);
+END;
+
+CREATE TRIGGER episodes_au AFTER UPDATE OF gist, conversation_id ON episodes BEGIN
+  INSERT INTO episodes_fts(episodes_fts, rowid, gist, conversation_id)
+  VALUES ('delete', old.rowid, old.gist, old.conversation_id);
+  INSERT INTO episodes_fts(rowid, gist, conversation_id)
+  VALUES (new.rowid, new.gist, new.conversation_id);
+END;
+
+-- ─── Entities ───────────────────────────────────────────────────────────────
+-- The handles a vague query actually reaches for: a person, a place, a link.
+-- Populated from Phase 5's query understanding and the extraction tier;
+-- declared here so the schema settles in one migration rather than two.
+CREATE TABLE entities (
+  id         TEXT PRIMARY KEY,
+  kind       TEXT NOT NULL,      -- person | place | org | product | url | media | date
+  name       TEXT NOT NULL,
+  norm_name  TEXT NOT NULL,
+  person_id  TEXT REFERENCES people(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (kind, norm_name)
+);
+
+CREATE INDEX idx_entities_person ON entities(person_id);
+
+CREATE TABLE entity_mentions (
+  entity_id  TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+  message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  episode_id TEXT REFERENCES episodes(id) ON DELETE SET NULL,
+  PRIMARY KEY (entity_id, message_id)
+);
+
+CREATE INDEX idx_ementions_msg ON entity_mentions(message_id);
+CREATE INDEX idx_ementions_ep  ON entity_mentions(episode_id);
+
+-- ─── Rebuild messages_fts with a multilingual tokenizer ─────────────────────
+--
+-- 001_init used tokenize='porter unicode61'. Porter is an ENGLISH stemmer and
+-- is actively harmful on code-switched text — it mangles Hinglish tokens into
+-- nonsense stems that match nothing. The replacement drops it in favour of
+-- unicode61 with full diacritic folding, and adds a prefix index.
+--
+-- Losing Porter means "running" no longer matches "run", so buildFtsQuery()
+-- (now one shared implementation in lib/fts-query.ts) emits a trailing-star
+-- prefix term for tokens of 3+ characters. The prefix index is what makes that
+-- fast — and it is also what finally makes typing "post" match "postgres".
+--
+-- messages_fts is an external-content table: it stores no content of its own,
+-- only the index. So dropping and recreating it loses nothing, and 'rebuild'
+-- repopulates it from messages. The three triggers reference it by name and
+-- survive the swap.
+DROP TABLE messages_fts;
+
+CREATE VIRTUAL TABLE messages_fts USING fts5(
+  content_text,
+  role UNINDEXED,
+  conversation_id UNINDEXED,
+  content='messages',
+  content_rowid='rowid',
+  tokenize='unicode61 remove_diacritics 2',
+  prefix='2 3'
+);
+
+INSERT INTO messages_fts(messages_fts) VALUES('rebuild');
+
+-- ─── Same treatment for memories_fts ────────────────────────────────────────
+-- memories_fts has the same Porter tokenizer and the same near-duplicate query
+-- builder, so it needs the same rebuild or recall regresses the moment the
+-- query builder starts emitting prefixes.
+DROP TABLE memories_fts;
+
+CREATE VIRTUAL TABLE memories_fts USING fts5(
+  text,
+  kind UNINDEXED,
+  content='memories',
+  content_rowid='rowid',
+  tokenize='unicode61 remove_diacritics 2',
+  prefix='2 3'
+);
+
+INSERT INTO memories_fts(memories_fts) VALUES('rebuild');
+
+-- Scope the memory update trigger the same way messages_au was scoped in 006.
+-- This one matters on a hot path: touch_memories() bumps last_used_at and
+-- use_count on every single injection, and each of those was rewriting the
+-- memory's FTS row for columns FTS does not index.
+DROP TRIGGER memories_au;
+
+CREATE TRIGGER memories_au AFTER UPDATE OF text, kind ON memories BEGIN
+  INSERT INTO memories_fts(memories_fts, rowid, text, kind)
+  VALUES ('delete', old.rowid, old.text, old.kind);
+  INSERT INTO memories_fts(rowid, text, kind) VALUES (new.rowid, new.text, new.kind);
+END;
+`
   ]
 ];

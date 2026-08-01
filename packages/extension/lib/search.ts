@@ -6,9 +6,21 @@
 // Reciprocal Rank Fusion merges both rank lists without needing scores on
 // the same scale: score(d) = sum_over_modes(1 / (k + rank)).
 // Results collapse to one hit per conversation (best message).
+//
+// The two lanes work at different granularities on purpose. FTS matches
+// individual messages, because an exact token appears in exactly one of them.
+// The vector lane matches **episodes** — see lib/vectors.ts for the storage
+// arithmetic, but the retrieval half of the argument is that a vague query has
+// more in common with a stretch of conversation than with any one line of it.
+// Each episode hit is then resolved back down to the message inside it that
+// best matches the query, so a result still points somewhere specific.
 
 import { dbAll, dbGet, getDb, markDirty } from "./db.js";
-import { embedText, searchByVector } from "./embeddings.js";
+import { embedText } from "./embeddings.js";
+import { resolveEpisodes, type EpisodeRow } from "./episodes.js";
+import { buildFtsQuery } from "./fts-query.js";
+import { isVectorsReady, searchVectors, vectorStats, reset as resetVectors } from "./vectors.js";
+import { EMBED_DIMS } from "./embeddings.js";
 import type { SearchHit } from "@smriti/shared";
 
 const RRF_K = 60;
@@ -60,13 +72,13 @@ export async function search(query: string, limit = 20): Promise<SearchHit[]> {
     }
   }
 
-  // ─── Vector lane ────────────────────────────────────────────────────────
-  let vecRows: Array<{ message_id: string; conversation_id: string; score: number; content_text: string }> = [];
+  // ─── Vector lane (episodes) ─────────────────────────────────────────────
+  let vecRows: VecRow[] = [];
   try {
-    const haveAny = dbGet("SELECT 1 FROM message_embeddings LIMIT 1");
-    if (haveAny) {
+    // vectorStats() rather than a SELECT: the vectors are not in SQLite.
+    if (isVectorsReady() && vectorStats().count > 0) {
       const qv = await embedText(q);
-      vecRows = searchByVector(qv, VEC_K);
+      vecRows = resolveEpisodeHits(searchVectors(qv, VEC_K).map((h) => h.id), q);
     }
   } catch {
     // Vector search optional — FTS still runs.
@@ -168,19 +180,83 @@ export async function search(query: string, limit = 20): Promise<SearchHit[]> {
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
-function buildFtsQuery(q: string): string {
-  const phrases: string[] = [];
-  const remainder = q.replace(/"([^"]+)"/g, (_m, p) => {
-    phrases.push(`"${p}"`);
-    return " ";
-  });
-  const tokens = remainder
-    .split(/\s+/)
-    .map((t) => t.replace(/[^\p{L}\p{N}_]/gu, ""))
-    .filter((t) => t.length >= 2);
-  const parts = [...phrases, ...tokens];
-  if (parts.length === 0) return "";
-  return parts.join(" OR ");
+interface VecRow {
+  message_id: string;
+  conversation_id: string;
+  content_text: string;
+}
+
+/**
+ * Turn ranked episode ids into ranked messages, preserving rank order.
+ *
+ * An episode covers ~15 messages, and showing the user "somewhere in here"
+ * would be a worse result than the per-message search this replaced. So each
+ * episode is resolved to the message inside it with the most query-token
+ * overlap — and where nothing overlaps at all (the paraphrase case, which is
+ * exactly what the vector lane is for), to the message that opens the episode,
+ * since that is usually where the intent is stated.
+ */
+function resolveEpisodeHits(episodeIds: string[], query: string): VecRow[] {
+  if (episodeIds.length === 0) return [];
+
+  const byId = new Map(resolveEpisodes(episodeIds).map((e) => [e.id, e]));
+  // resolveEpisodes returns rows in whatever order SQLite likes; re-impose the
+  // ranking, dropping ids whose episode was deleted since it was embedded.
+  const ranked: EpisodeRow[] = [];
+  for (const id of episodeIds) {
+    const e = byId.get(id);
+    if (e) ranked.push(e);
+  }
+  if (ranked.length === 0) return [];
+
+  // One query for every range rather than one per episode.
+  const clauses = ranked
+    .map(() => "(conversation_id = ? AND position BETWEEN ? AND ?)")
+    .join(" OR ");
+  const params: Array<string | number> = [];
+  for (const e of ranked) params.push(e.conversation_id, e.position_start, e.position_end);
+
+  const msgs = dbAll<{
+    id: string; conversation_id: string; position: number; content_text: string;
+  }>(
+    `SELECT id, conversation_id, position, content_text
+     FROM messages WHERE ${clauses}
+     ORDER BY position ASC`,
+    params,
+  );
+
+  const byConv = new Map<string, typeof msgs>();
+  for (const m of msgs) {
+    const bucket = byConv.get(m.conversation_id);
+    if (bucket) bucket.push(m);
+    else byConv.set(m.conversation_id, [m]);
+  }
+
+  const toks = query.toLowerCase().split(/\s+/).filter((t) => t.length >= 2);
+  const out: VecRow[] = [];
+  const seen = new Set<string>();
+
+  for (const e of ranked) {
+    const bucket = byConv.get(e.conversation_id);
+    if (!bucket) continue;
+    let best: { id: string; text: string; score: number } | null = null;
+    for (const m of bucket) {
+      if (m.position < e.position_start || m.position > e.position_end) continue;
+      const lower = m.content_text.toLowerCase();
+      let score = 0;
+      for (const t of toks) if (lower.includes(t)) score++;
+      // Strictly greater, and the bucket is position-ordered, so a tie keeps
+      // the earliest message — the start of the episode.
+      if (!best || score > best.score) best = { id: m.id, text: m.content_text, score };
+    }
+    // One row per message: two episodes of the same conversation can otherwise
+    // resolve to the same message and double-count in RRF.
+    if (best && !seen.has(best.id)) {
+      seen.add(best.id);
+      out.push({ message_id: best.id, conversation_id: e.conversation_id, content_text: best.text });
+    }
+  }
+  return out;
 }
 
 function makeSnippet(text: string, query: string): string {
@@ -265,6 +341,11 @@ export function wipeArchive(): number {
     db.run("DELETE FROM memories");
     db.run("DELETE FROM memory_meta");
     db.run("DELETE FROM message_embeddings");
+    // Before messages/conversations: entity_mentions references both messages
+    // and episodes, and episodes references conversations.
+    db.run("DELETE FROM entity_mentions");
+    db.run("DELETE FROM entities");
+    db.run("DELETE FROM episodes");
     db.run("DELETE FROM notes");
     db.run("DELETE FROM conversation_tags");
     db.run("DELETE FROM tags");
@@ -276,11 +357,16 @@ export function wipeArchive(): number {
     db.run("DELETE FROM ingest_state");
     db.run("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')");
     db.run("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')");
+    db.run("INSERT INTO episodes_fts(episodes_fts) VALUES('rebuild')");
     db.run("COMMIT");
   } catch (e) {
     db.run("ROLLBACK");
     throw e;
   }
+  // The episode vectors are not in the database, so the transaction above says
+  // nothing about them. Wiping the archive has to wipe them too, or the store
+  // keeps scoring episodes that no longer exist.
+  resetVectors(EMBED_DIMS);
   markDirty();
   return before;
 }

@@ -22,12 +22,23 @@ import {
   getPendingMemoryEmbeddings,
   storeMemoryEmbedding,
 } from "./memory.js";
+import {
+  conversationsNeedingEpisodes,
+  embedEpisode,
+  episodesNeedingVectors,
+  rebuildEpisodes,
+} from "./episodes.js";
+import { isVectorsReady } from "./vectors.js";
 
 const TICK_INTERVAL_MS = 5_000;
 const IDLE_INTERVAL_MS = 30_000;
 const BATCH_SIZE = 16;
 const MEMORY_BATCH_SIZE = 12;
 const EXTRACT_BATCH_SIZE = 64;
+// Episode work is cheap per unit (segmentation needs no model) but each rebuild
+// touches a whole conversation, so keep the batch small to stay responsive.
+const EPISODE_BATCH_SIZE = 4;
+const EPISODE_EMBED_BATCH_SIZE = 8;
 const MAX_CONSECUTIVE_ERRORS = 5;
 
 let running = false;
@@ -75,14 +86,33 @@ async function tick(): Promise<void> {
     console.warn("[smriti:index] extraction sweep failed", String(e));
   }
 
+  // ── Episode segmentation (cheap, no model) — runs before embedding so a
+  //    newly captured conversation becomes navigable immediately.
+  //
+  //    Gated on the vector store being loaded: rebuilding drops the old
+  //    episodes AND their vectors, and a removeVector() against an unloaded
+  //    store is a silent no-op that would leave the file full of vectors for
+  //    episode ids that no longer exist. ──
+  let episodesBuilt = 0;
+  if (isVectorsReady()) {
+    try {
+      for (const convId of conversationsNeedingEpisodes(EPISODE_BATCH_SIZE)) {
+        episodesBuilt += rebuildEpisodes(convId).length;
+      }
+    } catch (e) {
+      console.warn("[smriti:index] episode rebuild failed", String(e));
+    }
+  }
+
   const pending = getPendingMessages(BATCH_SIZE);
   const pendingMem = getPendingMemoryEmbeddings(MEMORY_BATCH_SIZE);
+  const pendingEpisodes = episodesNeedingVectors(EPISODE_EMBED_BATCH_SIZE);
 
-  if (pending.length === 0 && pendingMem.length === 0) {
+  if (pending.length === 0 && pendingMem.length === 0 && pendingEpisodes.length === 0) {
     consecutiveErrors = 0;
     console.debug(`[smriti:index] tick ms=${Date.now() - t0} extracted=${extracted} idle`);
-    // If extraction just created memories, come back promptly to embed them.
-    scheduleNext(extracted > 0 ? TICK_INTERVAL_MS : IDLE_INTERVAL_MS);
+    // If extraction or segmentation just created work, come back promptly.
+    scheduleNext(extracted > 0 || episodesBuilt > 0 ? TICK_INTERVAL_MS : IDLE_INTERVAL_MS);
     return;
   }
 
@@ -115,13 +145,26 @@ async function tick(): Promise<void> {
         console.warn("[smriti:index] memory embed failed", mem.id, String(e));
       }
     }
+    // ── Embed episode gists (the retrieval unit — see lib/vectors.ts) ──
+    // One at a time rather than embedBatch: gists are short, the batch is 8,
+    // and each putVector wants to land even if a later one throws.
+    let epStored = 0;
+    for (const ep of pendingEpisodes) {
+      try {
+        await embedEpisode(ep.id, ep.gist);
+        epStored++;
+      } catch (e) {
+        console.warn("[smriti:index] episode embed failed", ep.id, String(e));
+      }
+    }
     consecutiveErrors = 0;
 
-    if (totalEmbedded % 50 === 0 || pending.length < BATCH_SIZE || memStored > 0) {
+    if (totalEmbedded % 50 === 0 || pending.length < BATCH_SIZE || memStored > 0 || epStored > 0) {
       const s = countEmbedStatus();
       console.log(
-        `[smriti:index] msgs=${batchStored} mem=${memStored} extracted=${extracted}` +
-        ` ms=${Date.now() - t0} embedded=${s.embedded} pending=${s.pending}`,
+        `[smriti:index] msgs=${batchStored} mem=${memStored} eps=${epStored}` +
+        ` extracted=${extracted} ms=${Date.now() - t0}` +
+        ` embedded=${s.embedded} pending=${s.pending}`,
       );
     }
   } catch (e) {
