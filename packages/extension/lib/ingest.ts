@@ -6,9 +6,10 @@
 // chat — see the notes on messageHash(), nextPosition() and the accepted count.
 
 import { randomUUID } from "./crypto.js";
-import type { CaptureEvent, Role, SourceId } from "@smriti/shared";
+import type { CaptureEvent, CaptureSpace, SourceId } from "@smriti/shared";
 import { dbGet, dbRun, getDb, markDirty } from "./db.js";
 import { messageHash } from "./ingest-identity.js";
+import { APP_SPACE, authorIdFor, ensureBot, ensureSelf, ensureSpace, type PeopleDb } from "./people.js";
 
 /**
  * The next dense position in a conversation.
@@ -32,46 +33,30 @@ function nextPosition(conversationId: string): number {
 //
 // Migration 006 backfilled these for existing rows; new rows have to keep them
 // populated or the two halves of the archive diverge. For an AI source the
-// mapping is fixed: one app-level space, the user is always `person:self`, and
-// the assistant is the source's bot person. Human sources will resolve real
-// people per message in Phase 3.
+// mapping is fixed and needs no lookups: one app-level space, the user is always
+// `person:self`, the assistant is the source's bot person. A human source can't
+// work that way — the participant changes per message — so from Phase 3 an event
+// may carry its own `author` and `space`, and `lib/people.ts` resolves them.
 
-const SELF_PERSON_ID = "person:self";
+/** lib/people.ts takes its database as an argument. Here it is the real one. */
+const peopleDb: PeopleDb = { get: dbGet, run: dbRun };
 
-function appSpaceId(source: SourceId): string {
-  return `space:${source}`;
+/**
+ * Prepare the fixed rows a source always needs. Cheap and idempotent, done once
+ * per source per batch; per-message authors are resolved separately.
+ */
+function ensureSourceBasics(source: SourceId, now: string): void {
+  ensureSpace(peopleDb, source, APP_SPACE, now);
+  ensureSelf(peopleDb, now);
+  ensureBot(peopleDb, source, now);
 }
 
-function botPersonId(source: SourceId): string {
-  return `person:bot:${source}`;
-}
-
-function ensureSpaceAndPeople(source: SourceId, now: string): void {
-  dbRun(
-    `INSERT INTO spaces (id, source, space_key, label, kind, created_at, last_active_at)
-     VALUES (?, ?, 'app', ?, 'app', ?, ?)
-     ON CONFLICT(source, space_key) DO UPDATE SET last_active_at = excluded.last_active_at`,
-    [appSpaceId(source), source, source, now, now],
-  );
-  dbRun(
-    `INSERT INTO people (id, display_name, is_self, created_at)
-     VALUES (?, 'You', 1, ?)
-     ON CONFLICT(id) DO NOTHING`,
-    [SELF_PERSON_ID, now],
-  );
-  dbRun(
-    `INSERT INTO people (id, display_name, is_self, created_at)
-     VALUES (?, ?, 0, ?)
-     ON CONFLICT(id) DO NOTHING`,
-    [botPersonId(source), source, now],
-  );
-}
-
-/** Which person authored this turn. system/tool turns are not people. */
-function authorFor(source: SourceId, role: Role): string | null {
-  if (role === "user") return SELF_PERSON_ID;
-  if (role === "assistant") return botPersonId(source);
-  return null;
+/**
+ * Where this event's conversation lives. An AI connector says nothing and gets
+ * the app space; a human connector names the DM or group it observed.
+ */
+function spaceIdFor(source: SourceId, space: CaptureSpace | undefined, now: string): string {
+  return ensureSpace(peopleDb, source, space ?? APP_SPACE, now);
 }
 
 // ─── Ingest ──────────────────────────────────────────────────────────────────
@@ -99,7 +84,7 @@ export function ingestEvents(events: CaptureEvent[]): { accepted: number } {
     for (const ev of events) {
       if (!seenSources.has(ev.platform)) {
         seenSources.add(ev.platform);
-        ensureSpaceAndPeople(ev.platform, now);
+        ensureSourceBasics(ev.platform, now);
       }
 
       if (ev.kind === "conversation_seen") {
@@ -115,9 +100,14 @@ export function ingestEvents(events: CaptureEvent[]): { accepted: number } {
            ON CONFLICT(platform, platform_conv_id) DO UPDATE SET
              title = COALESCE(excluded.title, conversations.title),
              url   = COALESCE(excluded.url, conversations.url),
-             last_message_at = excluded.last_message_at`,
+             last_message_at = excluded.last_message_at,
+             -- The connector's latest word wins: a thread first seen through a
+             -- message event lands in the app space, and this is where it moves
+             -- to the DM or group once the connector can name one.
+             space_id = excluded.space_id`,
           [id, ev.platform, ev.platform_conv_id, ev.title ?? null, ev.url ?? null,
-           ev.observed_at, ev.observed_at, ev.observed_at, appSpaceId(ev.platform)],
+           ev.observed_at, ev.observed_at, ev.observed_at,
+           spaceIdFor(ev.platform, ev.space, now)],
         );
         if (!existing) bump(ev.platform, "conversations");
         accepted++;
@@ -135,7 +125,7 @@ export function ingestEvents(events: CaptureEvent[]): { accepted: number } {
                (id, platform, platform_conv_id, title, url, started_at, last_message_at, ingested_at, space_id)
              VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?)`,
             [convId, ev.platform, ev.platform_conv_id, ev.created_at, ev.created_at,
-             ev.created_at, appSpaceId(ev.platform)],
+             ev.created_at, spaceIdFor(ev.platform, ev.space, now)],
           );
           bump(ev.platform, "conversations");
         } else {
@@ -154,7 +144,7 @@ export function ingestEvents(events: CaptureEvent[]): { accepted: number } {
           [randomUUID(), convId, ev.platform_msg_id ?? null, ev.role,
            ev.content_text, ev.content_html ?? null,
            ev.model ?? null, ev.created_at, position, messageHash(ev),
-           authorFor(ev.platform, ev.role)],
+           authorIdFor(peopleDb, ev.platform, ev.role, ev.author, now)],
         );
 
         // INSERT OR IGNORE silently does nothing on a dedup hit. The old code

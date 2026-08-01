@@ -6,6 +6,7 @@
 
 import { createHash } from "./crypto.js";
 import type { CaptureEventMessageAppended } from "@smriti/shared";
+import { normalizeExternalId } from "./people-identity.js";
 
 /** The three identity schemes, strongest first. Exported for the test suite. */
 export type HashScheme = "external-id" | "platform-time" | "role-text";
@@ -56,8 +57,25 @@ export function messageHash(ev: CaptureEventMessageAppended): string {
     case "external-id":
       return createHash("id\0" + ev.platform_msg_id);
     case "platform-time":
-      return createHash("t\0" + ev.role + "\0" + ev.created_at + "\0" + ev.content_text);
+      return createHash("t\0" + ev.role + who(ev) + "\0" + ev.created_at + "\0" + ev.content_text);
     case "role-text":
-      return createHash("r\0" + ev.role + "\0" + ev.content_text);
+      return createHash("r\0" + ev.role + who(ev) + "\0" + ev.content_text);
   }
+}
+
+/**
+ * The author's contribution to the weaker two schemes.
+ *
+ * `role` alone separates the user from everyone else, which is the whole cast on
+ * an AI source. In a group thread it is not: two participants agreeing with
+ * "haha" in the same minute are one hash apart, and the second one silently
+ * loses. Adding the author separates them.
+ *
+ * Empty when the event carries no author, so every hash an AI connector has ever
+ * produced is byte-for-byte unchanged — a formula change there would re-insert
+ * already-stored messages on their next re-capture.
+ */
+function who(ev: CaptureEventMessageAppended): string {
+  const id = ev.author?.external_id ? normalizeExternalId(ev.author.external_id) : "";
+  return id ? "\0" + id : "";
 }

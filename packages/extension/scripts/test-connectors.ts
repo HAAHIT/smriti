@@ -7,13 +7,19 @@
 // registry plus two reusable strategies. Two things need to stay true for that
 // to have been worth doing, and both are asserted here:
 //   1. every origin list is derived from the registry, so they cannot drift
-//   2. a NEW connector is small — the synthetic fourth source at the bottom is
-//      the exit test for the whole phase.
+//   2. a NEW connector is small — the synthetic sources at the bottom are the
+//      exit test for the whole phase.
+//
+// Phase 3 added the first human source, and with it the parsing that decides who
+// said what (lib/connectors/whatsapp-parse.ts). Those assertions live here too:
+// attributing a message to the wrong person is the failure mode of this phase,
+// and it is silent.
 
 import {
   SOURCES,
   allHosts,
   allOrigins,
+  bridgeOrigins,
   hostOfOrigin,
   hostsForSource,
   overlayOrigins,
@@ -24,6 +30,13 @@ import {
   type SourceDef,
 } from "../lib/connectors/registry.js";
 import {
+  authorIdOf,
+  inferDateOrder,
+  parseDataId,
+  parsePrePlainText,
+  toIsoTimestamp,
+} from "../lib/connectors/whatsapp-parse.js";
+import {
   buildTurnEvents,
   readSseStream,
   urlOf,
@@ -31,6 +44,7 @@ import {
   type StreamState,
 } from "../lib/connectors/fetch-interceptor.js";
 import { hashSchemeFor, messageHash } from "../lib/ingest-identity.js";
+import type { TurnMeta } from "../lib/connectors/dom-observer.js";
 import type { CaptureEventMessageAppended } from "@smriti/shared";
 
 let pass = 0;
@@ -45,7 +59,7 @@ function check(name: string, cond: boolean): void {
 
 console.log("\n=== registry ===\n");
 
-check("three sources declared", SOURCES.length === 3);
+check("four sources declared", SOURCES.length === 4);
 check(
   "every source id is unique",
   new Set(SOURCES.map((s) => s.id)).size === SOURCES.length,
@@ -54,12 +68,20 @@ check(
   "every origin is an https match pattern",
   allOrigins().every((o) => /^https:\/\/[^/]+\/\*$/.test(o)),
 );
+check(
+  "every source declares a capture strategy",
+  SOURCES.every((s) => s.strategy === "fetch" || s.strategy === "dom"),
+);
+check(
+  "a source that cannot be walked does not claim backfill",
+  sourceById("gemini")?.capabilities.backfill === false,
+);
 
 check("hostOfOrigin strips scheme and path", hostOfOrigin("https://claude.ai/*") === "claude.ai");
 check("hostOfOrigin strips a leading wildcard label", hostOfOrigin("https://*.example.com/*") === "example.com");
 
 check("sourceById finds a known source", sourceById("claude")?.label === "Claude");
-check("sourceById returns null for an unknown id", sourceById("whatsapp") === null);
+check("sourceById returns null for an unknown id", sourceById("signal") === null);
 
 check(
   "sourceForHostname resolves the primary host",
@@ -107,6 +129,56 @@ check(
   allHosts().length === new Set(allHosts()).size,
 );
 check("hostsForSource is empty for an unknown source", hostsForSource("nope").length === 0);
+
+// ─── The human source ────────────────────────────────────────────────────────
+//
+// A human source differs from an AI one in ways that are *behavioural*, not
+// cosmetic: no composer to inject into, no sidebar overlay, no history endpoint
+// to walk, and — because the mechanism runs ISOLATED — no bridge script on the
+// user's private messages.
+
+console.log("\n=== the human source ===\n");
+
+const wa = sourceById("whatsapp");
+
+check("whatsapp is declared", wa?.kind === "human");
+check("…and is multi-party", wa?.multiParty === true);
+check("…captures live", wa?.capabilities.live === true);
+check("…offers no composer to inject into", wa?.capabilities.composer === false);
+check("…does not mount the sidebar overlay", wa?.capabilities.overlay === false);
+check("…and cannot be backfilled", wa?.capabilities.backfill === false);
+check("…via the DOM, not fetch", wa?.strategy === "dom");
+
+check(
+  "the sidebar does not mount on a human source",
+  !overlayOrigins().some((o) => o.includes("whatsapp")),
+);
+check(
+  "the bridge is not injected into a human source's pages",
+  !bridgeOrigins().some((o) => o.includes("whatsapp")),
+);
+check(
+  "…nor into any DOM-observer source",
+  bridgeOrigins().every((o) => SOURCES.some((s) => s.strategy === "fetch" && s.origins.includes(o))),
+);
+check(
+  "…but every fetch source still has one",
+  SOURCES.filter((s) => s.strategy === "fetch").every((s) =>
+    s.origins.every((o) => bridgeOrigins().includes(o)),
+  ),
+);
+check(
+  "capture can still be paused per host on a human source",
+  hostsForSource("whatsapp").includes("web.whatsapp.com"),
+);
+
+// WhatsApp Web serves every chat from one URL. Returning anything from it would
+// mint a second id shape for a chat the connector already identifies by jid.
+check(
+  "the URL never identifies a WhatsApp thread",
+  wa!.convIdFromUrl(new URL("https://web.whatsapp.com/")) === null &&
+    wa!.convIdFromUrl(new URL("https://web.whatsapp.com/send?phone=919812345678")) === null,
+);
 
 // ─── Conversation id resolution ──────────────────────────────────────────────
 
@@ -233,6 +305,119 @@ const empty = buildTurnEvents({
 });
 check("whitespace-only assistant text is dropped", empty.length === 1);
 
+// ─── WhatsApp: who said what ─────────────────────────────────────────────────
+//
+// `data-id` is WhatsApp's own statement of chat, message, sender and direction.
+// Every assertion here is really about one thing: a message must never be filed
+// under the wrong person.
+
+console.log("\n=== whatsapp: data-id ===\n");
+
+const dmIn = parseDataId("false_919812345678@c.us_3EB0C2F1A2B3");
+check("a DM's incoming message parses", dmIn !== null);
+check("…is not from the user", dmIn?.fromMe === false);
+check("…names the chat", dmIn?.chatId === "919812345678@c.us");
+check("…names the message", dmIn?.msgId === "3EB0C2F1A2B3");
+check("…has no participant", dmIn?.participant === null);
+check("…and is not a group", dmIn?.isGroup === false);
+
+const dmOut = parseDataId("true_919812345678@c.us_3EB0C2F1A2B3");
+check("an outgoing message is flagged as the user's", dmOut?.fromMe === true);
+check(
+  "…and the jid is still the other party, so it is not who spoke",
+  authorIdOf(dmOut!) === "self",
+);
+check("an incoming DM is authored by the chat itself", authorIdOf(dmIn!) === "919812345678@c.us");
+
+const grp = parseDataId("false_120363019283746@g.us_3EB0ABC_919812345678@c.us");
+check("a group message parses", grp !== null);
+check("…is a group", grp?.isGroup === true);
+check("…names the participant", grp?.participant === "919812345678@c.us");
+check("…and the participant is the author, not the group", authorIdOf(grp!) === "919812345678@c.us");
+check(
+  "an outgoing group message is still the user's, by their own number",
+  authorIdOf(parseDataId("true_120363019283746@g.us_3EB0ABC_919800000000@c.us")!) === "919800000000@c.us",
+);
+check(
+  "a message id containing an underscore survives",
+  parseDataId("false_919812345678@c.us_3EB0_ABC_DEF")?.msgId === "3EB0_ABC_DEF",
+);
+check("a legacy group jid is still a group", parseDataId("false_919812345678-1600000000@g.us_X")?.isGroup === true);
+
+// Half-parsed is worse than unparsed: it would attribute a message to whoever
+// happened to be in the wrong field.
+check("a malformed id is rejected outright", parseDataId("garbage") === null);
+check("…a missing direction flag is rejected", parseDataId("maybe_919812345678@c.us_X") === null);
+check("…a non-jid chat is rejected", parseDataId("false_notajid_X") === null);
+check("…and a missing message id is rejected", parseDataId("false_919812345678@c.us_") === null);
+
+console.log("\n=== whatsapp: data-pre-plain-text ===\n");
+
+const pre = parsePrePlainText("[10:32, 7/31/2026] Alice: ");
+check("the timestamp and sender parse", pre?.time === "10:32" && pre?.date === "7/31/2026");
+check("…and the name is trimmed of its colon", pre?.author === "Alice");
+check(
+  "a sender named by number still parses",
+  parsePrePlainText("[10:32, 7/31/2026] +91 98123 45678: ")?.author === "+91 98123 45678",
+);
+check(
+  "an outgoing row with no name parses with a null author",
+  parsePrePlainText("[10:32, 7/31/2026] ")?.author === null,
+);
+check("anything else is rejected", parsePrePlainText("Alice said hello") === null);
+
+console.log("\n=== whatsapp: ambiguous dates ===\n");
+
+// The failure this guards: a wrong date shifts a message by weeks, and
+// lib/segment.ts splits episodes on time gaps — so a bad date silently reshapes
+// the index rather than showing up as a wrong timestamp somewhere visible.
+check("a day past the 12th proves day-first", inferDateOrder(["31/07/2026", "1/2/2026"]) === "dmy");
+check("…and in the second slot proves month-first", inferDateOrder(["7/31/2026"]) === "mdy");
+check("an all-ambiguous chat stays unknown", inferDateOrder(["1/2/2026", "3/4/2026"]) === null);
+check("contradictory samples are trusted no further", inferDateOrder(["31/07/2026", "7/31/2026"]) === null);
+check("an ISO date needs no inference", inferDateOrder(["2026-07-31"]) === "iso");
+check("nothing at all is unknown", inferDateOrder([]) === null);
+
+check(
+  "an unknown order dates nothing",
+  toIsoTimestamp({ date: "1/2/2026", time: "10:32" }, null) === null,
+);
+check(
+  "month-first resolves as rendered",
+  toIsoTimestamp({ date: "7/31/2026", time: "10:32" }, "mdy") ===
+    new Date(2026, 6, 31, 10, 32, 0).toISOString(),
+);
+check(
+  "day-first resolves as rendered",
+  toIsoTimestamp({ date: "31/07/2026", time: "10:32" }, "dmy") ===
+    new Date(2026, 6, 31, 10, 32, 0).toISOString(),
+);
+check(
+  "the same digits read both ways are three weeks apart",
+  toIsoTimestamp({ date: "7/8/2026", time: "10:32" }, "mdy") !==
+    toIsoTimestamp({ date: "7/8/2026", time: "10:32" }, "dmy"),
+);
+check(
+  "a 12-hour clock is understood",
+  toIsoTimestamp({ date: "7/31/2026", time: "10:32 pm" }, "mdy") ===
+    new Date(2026, 6, 31, 22, 32, 0).toISOString(),
+);
+check(
+  "midnight in 12-hour form is not noon",
+  toIsoTimestamp({ date: "7/31/2026", time: "12:05 am" }, "mdy") ===
+    new Date(2026, 6, 31, 0, 5, 0).toISOString(),
+);
+check(
+  "a two-digit year is this century",
+  toIsoTimestamp({ date: "7/31/26", time: "10:32" }, "mdy") ===
+    new Date(2026, 6, 31, 10, 32, 0).toISOString(),
+);
+check(
+  "a date that does not exist is refused, not rolled forward",
+  toIsoTimestamp({ date: "2/31/2026", time: "10:32" }, "mdy") === null,
+);
+check("an unparseable time is refused", toIsoTimestamp({ date: "7/31/2026", time: "half past" }, "mdy") === null);
+
 // ─── Message identity ────────────────────────────────────────────────────────
 
 console.log("\n=== message identity ===\n");
@@ -295,6 +480,53 @@ check(
   ]).size === 3,
 );
 
+// Phase 3: `role` separates the user from everyone else, which is the entire
+// cast on an AI source and nothing like enough in a group.
+const alice = { external_id: "919812345678@c.us" };
+const bob = { external_id: "919999999999@c.us" };
+check(
+  "two people agreeing in the same second stay distinct",
+  messageHash(msg({ created_at_source: "platform", author: alice })) !==
+    messageHash(msg({ created_at_source: "platform", author: bob })),
+);
+check(
+  "…and with no platform timestamp either",
+  messageHash(msg({ author: alice })) !== messageHash(msg({ author: bob })),
+);
+check(
+  "the same person written two ways is still one person",
+  messageHash(msg({ author: alice })) ===
+    messageHash(msg({ author: { external_id: "+91 98123 45678" } })),
+);
+check(
+  "re-capturing one person's message is still idempotent",
+  messageHash(msg({ author: alice, created_at: "2026-07-31T10:00:00Z" })) ===
+    messageHash(msg({ author: alice, created_at: "2026-07-31T11:22:33Z" })),
+);
+
+// Golden values. Every AI connector's hashes must be byte-for-byte what they
+// were before authors existed — changing the formula for messages already in the
+// archive would re-insert every one of them on its next re-capture.
+check(
+  "the role+text formula is unchanged for an authorless event",
+  messageHash(msg({ role: "user", content_text: "hello" })) === "70efe6041f4ab3ce",
+);
+check(
+  "…and so is the platform-time formula",
+  messageHash(
+    msg({
+      role: "user",
+      content_text: "hello",
+      created_at: "2026-07-31T10:00:00Z",
+      created_at_source: "platform",
+    }),
+  ) === "fe06691c14f6a8f6",
+);
+check(
+  "…and the external-id formula",
+  messageHash(msg({ platform_msg_id: "msg-1" })) === "e96d7dff871e2789",
+);
+
 // ─── Exit test: a synthetic fourth connector ─────────────────────────────────
 //
 // Phase 1's exit criterion is that adding a source is cheap. Everything below
@@ -308,6 +540,7 @@ const NOVA: SourceDef = {
   id: "nova",
   label: "Nova",
   color: "#7a5fa6",
+  strategy: "fetch",
   origins: ["https://nova.test/*"],
   kind: "ai",
   multiParty: false,
@@ -371,6 +604,59 @@ check("a full turn comes out the other end", novaEvents.length === 3);
 check(
   "…addressed to the new source",
   novaEvents.every((e) => e.platform === "nova"),
+);
+
+// ─── Exit test: a synthetic human source ─────────────────────────────────────
+//
+// Phase 3's exit criterion is that the *second* human source costs a registry
+// entry and one function: given a rendered row, say who spoke and where. No new
+// strategy, no schema change, no ingest change. Everything below is the whole
+// definition of a hypothetical "Pigeon" messenger.
+
+console.log("\n=== exit test: synthetic human source ===\n");
+
+const PIGEON: SourceDef = {
+  id: "pigeon",
+  label: "Pigeon",
+  color: "#5f7aa6",
+  strategy: "dom",
+  origins: ["https://pigeon.test/*"],
+  kind: "human",
+  multiParty: true,
+  capabilities: { live: true, backfill: false, composer: false, overlay: false },
+  convIdFromUrl: (u) => u.pathname.match(/^\/room\/([\w-]{4,})/)?.[1] ?? null,
+};
+
+/** The one site-specific function a human connector owes the DOM observer. */
+function pigeonMeta(row: { room: string; sender: string; name?: string; mine?: boolean; id: string }): TurnMeta {
+  return {
+    role: row.mine ? "user" : "assistant",
+    platform_msg_id: row.id,
+    conversation_id: row.room,
+    author: { external_id: row.sender, display_name: row.name, is_self: row.mine },
+    space: { space_key: row.room, kind: "group", label: "Pigeon room" },
+  };
+}
+
+const pigeonTurn = pigeonMeta({ room: "r-4821", sender: "@carol", name: "Carol", id: "m-9" });
+check("the room is the conversation", pigeonTurn.conversation_id === "r-4821");
+check("the sender is the author", pigeonTurn.author?.external_id === "@carol");
+check("…and is not the user", pigeonTurn.role === "assistant");
+check("the room is a group space", pigeonTurn.space?.kind === "group");
+check(
+  "the user's own turn is theirs",
+  pigeonMeta({ room: "r-4821", sender: "@me", mine: true, id: "m-10" }).role === "user",
+);
+check("the URL still identifies a room here", PIGEON.convIdFromUrl(new URL("https://pigeon.test/room/r-4821")) === "r-4821");
+check(
+  "two participants in one room do not collapse",
+  messageHash(msg({ author: { external_id: "@carol" }, content_text: "haha" })) !==
+    messageHash(msg({ author: { external_id: "@dave" }, content_text: "haha" })),
+);
+check(
+  "a handle is normalised the same everywhere",
+  messageHash(msg({ author: { external_id: "@Carol" } })) ===
+    messageHash(msg({ author: { external_id: "carol" } })),
 );
 
 console.log(`\nAssertions: ${pass} passed, ${fail} failed\n`);

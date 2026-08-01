@@ -12,12 +12,38 @@
 // Runs in the ISOLATED world, so it can use browser.* directly and emits
 // straight to the background worker — no postMessage bridge needed.
 
-import type { CaptureEvent, Role, SourceId } from "@smriti/shared";
+import type { CaptureAuthor, CaptureEvent, CaptureSpace, Role, SourceId } from "@smriti/shared";
 
 export interface RoleSelectors {
   role: Role;
   /** Tried in priority order; first match wins. Invalid selectors are skipped. */
   selectors: string[];
+}
+
+/**
+ * What a turn element says about itself beyond its text — everything a human
+ * source knows and an AI source doesn't.
+ *
+ * Every field is optional and every one of them has a working fallback, so a
+ * connector supplies only what its DOM actually exposes. Read once, after the
+ * element has settled, so a half-rendered row is never asked.
+ */
+export interface TurnMeta {
+  /** Overrides the role its selector group implied. */
+  role?: Role;
+  /** The platform's own message id — the strongest dedup key there is. */
+  platform_msg_id?: string;
+  author?: CaptureAuthor;
+  /** A platform-issued timestamp. Only set this if it really is one. */
+  created_at?: string;
+  created_at_source?: "platform" | "observed";
+  /**
+   * The thread this turn belongs to, when the URL doesn't say. WhatsApp Web
+   * keeps one URL for every chat, so the id has to come from the turn itself.
+   */
+  conversation_id?: string;
+  conversation_title?: string;
+  space?: CaptureSpace;
 }
 
 export interface DomConnectorDef {
@@ -27,6 +53,12 @@ export interface DomConnectorDef {
   settleMs: number;
   /** Extract the conversation id from the current location. */
   convIdFromUrl(u: URL): string | null;
+  /**
+   * Per-turn metadata. Called once, after the element settles. Returning null
+   * means "nothing to add" — the turn is still captured, using the URL for the
+   * conversation id and the selector group for the role.
+   */
+  metaFrom?(el: Element, role: Role): TurnMeta | null;
   /**
    * Pull the message text out of a turn element. Defaults to preferring a
    * markdown/content child over the element itself, to avoid capturing UI
@@ -127,8 +159,11 @@ export function installDomObserver(def: DomConnectorDef): void {
   }
 
   function settleAndCapture(el: Element, role: Role): void {
-    const cid = convId();
-    if (!cid) return;
+    // Cheap pre-check. Without a metaFrom hook the URL is the only thing that
+    // can name a thread, so an element on a page that isn't one is not worth
+    // observing. With the hook, the turn may name its own thread — decided
+    // after it settles, below.
+    if (!convId() && !def.metaFrom) return;
     const key = elementKey(el, role);
     if (seenKeys.has(key)) return;
 
@@ -141,9 +176,21 @@ export function installDomObserver(def: DomConnectorDef): void {
         obs.disconnect();
         const text = textFrom(el);
         if (!text) return;
-        // Re-check after settling: the key includes a text prefix, so it only
-        // becomes final once the element has stopped changing.
-        const finalKey = elementKey(el, role);
+
+        // Asked only now: a row mid-render can be missing its id, its sender,
+        // or its timestamp, and a wrong answer here is a misattributed message.
+        const meta = def.metaFrom?.(el, role) ?? null;
+        const cid = meta?.conversation_id ?? convId();
+        if (!cid) return;
+        const finalRole = meta?.role ?? role;
+
+        // Re-check after settling: the sibling-path key includes a text prefix,
+        // so it only becomes final once the element has stopped changing. A
+        // platform message id beats it outright — it survives a reload, which
+        // the path key does not.
+        const finalKey = meta?.platform_msg_id
+          ? `id:${meta.platform_msg_id}`
+          : elementKey(el, finalRole);
         if (seenKeys.has(finalKey)) return;
         seenKeys.add(finalKey);
         seenKeys.add(key);
@@ -154,17 +201,26 @@ export function installDomObserver(def: DomConnectorDef): void {
             kind: "conversation_seen",
             platform: def.sourceId,
             platform_conv_id: cid,
-            title: title(),
+            title: meta?.conversation_title ?? title(),
             url: window.location.href,
             observed_at: now,
+            space: meta?.space,
           },
           {
             kind: "message_appended",
             platform: def.sourceId,
             platform_conv_id: cid,
-            role,
+            platform_msg_id: meta?.platform_msg_id,
+            role: finalRole,
             content_text: text,
-            created_at: now,
+            created_at: meta?.created_at ?? now,
+            // "observed" is the safe default: hashing a timestamp we minted
+            // ourselves would re-insert the whole thread on every reload.
+            created_at_source: meta?.created_at
+              ? meta.created_at_source ?? "platform"
+              : "observed",
+            author: meta?.author,
+            space: meta?.space,
             // Within-batch hint only — ingest assigns the real dense position.
             position: 0,
           },

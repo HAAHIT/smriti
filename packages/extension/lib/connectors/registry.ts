@@ -33,12 +33,24 @@ export interface SourceCapabilities {
   overlay: boolean;
 }
 
+/**
+ * How this source is captured.
+ *
+ * `fetch` connectors run in the MAIN world and reach the background through
+ * entrypoints/bridge.content.ts; `dom` connectors run ISOLATED and talk to it
+ * directly. Declaring it here is what lets `bridgeOrigins()` keep the bridge off
+ * pages that have no MAIN-world connector to relay for — which matters most on
+ * a human source, where the pages are somebody's private messages.
+ */
+export type CaptureStrategy = "fetch" | "dom";
+
 export interface SourceDef {
   /** Stable key. Written to `conversations.platform`, so never change one. */
   id: SourceId;
   label: string;
   /** Badge colour, matching lib/sidebar-helpers.ts `providerBadge`. */
   color: string;
+  strategy: CaptureStrategy;
   /**
    * Match patterns. The single source of truth for content-script `matches`,
    * the sidebar's `matches`, and `host_permissions`.
@@ -74,6 +86,7 @@ export const SOURCES: SourceDef[] = [
     id: "claude",
     label: "Claude",
     color: "#c96442",
+    strategy: "fetch",
     origins: ["https://claude.ai/*"],
     kind: "ai",
     multiParty: false,
@@ -87,6 +100,7 @@ export const SOURCES: SourceDef[] = [
     id: "chatgpt",
     label: "ChatGPT",
     color: "#1f7a64",
+    strategy: "fetch",
     // chat.openai.com is the legacy origin and still redirects. It was already
     // in the ChatGPT content scripts; declaring it here propagates it to the
     // other three lists that were missing it.
@@ -104,10 +118,13 @@ export const SOURCES: SourceDef[] = [
     id: "gemini",
     label: "Gemini",
     color: "#3b6cb5",
+    strategy: "dom",
     origins: ["https://gemini.google.com/*"],
     kind: "ai",
     multiParty: false,
-    capabilities: AI_CAPABILITIES,
+    // No backfill: lib/backfill.ts implements Claude and ChatGPT only, and this
+    // flag is what that guard now reads.
+    capabilities: { ...AI_CAPABILITIES, backfill: false },
     convIdFromUrl(u) {
       const m =
         u.pathname.match(/\/app\/([\w-]{8,})/) ??
@@ -116,6 +133,39 @@ export const SOURCES: SourceDef[] = [
       // Filter out non-id path segments.
       if (!raw || /^(home|compose|settings|search)$/i.test(raw)) return null;
       return raw;
+    },
+  },
+  {
+    id: "whatsapp",
+    label: "WhatsApp",
+    color: "#1f9d55",
+    strategy: "dom",
+    origins: ["https://web.whatsapp.com/*"],
+    kind: "human",
+    multiParty: true,
+    capabilities: {
+      live: true,
+      // No history API to walk, and scrolling a chat to force-render it is
+      // indistinguishable from the user doing it. Live capture only.
+      backfill: false,
+      // Nothing to inject into: the point of WhatsApp is what the user says to
+      // people, not a prompt to complete.
+      composer: false,
+      // The sidebar shifts the host page with `margin-right`, which a
+      // full-height three-pane app reflows badly. Off until it can overlay.
+      overlay: false,
+    },
+    /**
+     * Always null — and that is the point.
+     *
+     * WhatsApp Web serves every chat from the same URL, so the location cannot
+     * identify a thread. The connector reads the chat's jid off each message
+     * row's `data-id` instead (see lib/connectors/whatsapp-parse.ts) and returns
+     * it as the conversation id. Deriving anything from `?phone=` here would
+     * mint a *second* id shape for the same chat and split it in two.
+     */
+    convIdFromUrl() {
+      return null;
     },
   },
 ];
@@ -142,6 +192,16 @@ export function allOrigins(): string[] {
 /** Match patterns for the sources whose sidebar overlay is enabled. */
 export function overlayOrigins(): string[] {
   return SOURCES.filter((s) => s.capabilities.overlay).flatMap((s) => s.origins);
+}
+
+/**
+ * Match patterns for entrypoints/bridge.content.ts — only the sources with a
+ * MAIN-world connector needing a relay. A `dom` source talks to the background
+ * itself, so injecting the bridge there would be a script on someone's private
+ * messages doing nothing at all.
+ */
+export function bridgeOrigins(): string[] {
+  return SOURCES.filter((s) => s.strategy === "fetch").flatMap((s) => s.origins);
 }
 
 export function sourceById(id: string): SourceDef | null {

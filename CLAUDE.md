@@ -61,18 +61,31 @@ Extension internals:
 - `lib/connectors/fetch-interceptor.ts` / `dom-observer.ts` — the two capture
   strategies. A connector supplies only what is site-specific (which requests to
   watch, how to parse a payload, or which selectors mark a turn); all the
-  mechanism lives in the strategy.
+  mechanism lives in the strategy. The DOM observer also takes an optional
+  `metaFrom(el)` returning a `TurnMeta` — the author, the platform message id,
+  a real timestamp, and the thread id when the URL doesn't carry one. That hook
+  is what makes a human source possible.
 - `entrypoints/*-main.content.ts` — the per-source connector definitions.
   MAIN-world for fetch interceptors (read-only; they tee the response so the
-  page is untouched).
+  page is untouched). DOM-observer connectors (`*-dom.content.ts`) run ISOLATED.
 - `entrypoints/bridge.content.ts` — ISOLATED-world relay. MAIN-world scripts
   can't reach `chrome.*`, so they `postMessage` and this forwards. One bridge
-  for all sources; its `matches` is the union of registry origins.
+  for every `strategy: "fetch"` source (`bridgeOrigins()`); DOM sources talk to
+  the background directly and get no bridge script.
 - `entrypoints/background.ts` — service worker; routes messages, owns the
   offscreen doc lifecycle + capture toggles.
 - `lib/ingest.ts` — turns capture events into rows. Owns the two things a
   connector cannot: the dense per-conversation `position`, and the dedup hash
   (`lib/ingest-identity.ts`, kept DB-free so it is testable).
+- `lib/people.ts` + `lib/people-identity.ts` — **who said this, and where.** An
+  AI source has a fixed mapping (user → `person:self`, assistant → that source's
+  bot) and needs no lookups; a human source names a participant per message, so
+  `people.ts` resolves `(source, external_id)` → `person_identities` → a person,
+  and resolves DM/group `spaces`. `people-identity.ts` is the pure normaliser and
+  refuses to invent a country code — merging two humans into one identity is
+  invisible and unrecoverable, two rows for one person is neither. `people.ts`
+  takes its database as an argument so the real SQL is tested against real
+  SQLite: `npm run test:people`.
 - `lib/offscreen-main.ts` — the compute engine. Owns SQLite (sql.js over OPFS),
   embeddings, search, memory. All RPCs dispatch here.
 - `lib/db.ts` — sql.js + OPFS persistence (debounced flush). Synchronous query
@@ -98,6 +111,15 @@ Extension internals:
   Rendering/state/styles/helpers live in `lib/sidebar-{types,styles,helpers,renderers}.ts`
   — the helpers and renderers are pure and have their own test suites.
 - `entrypoints/options/main.tsx` — the desktop archive viewer + Memory view.
+  Its capture toggles are registry-derived, so every source has an off switch.
+- `entrypoints/whatsapp-dom.content.ts` + `lib/connectors/whatsapp-parse.ts` —
+  the first **human** source. All the site knowledge is in the pure parser: a
+  message row's `data-id` names the chat, the message, the sender and whether
+  the user sent it, and `data-pre-plain-text` carries the rendered timestamp.
+  That timestamp is locale-formatted, so `inferDateOrder()` waits for a day past
+  the 12th to prove day-first vs month-first and refuses to date anything until
+  then — a wrong date silently reshapes the index, because `segment.ts` splits
+  episodes on time gaps.
 - `lib/vault-sync.ts` + `lib/okf-renderer.ts` + `lib/drive-client.ts` — optional
   vault export: conversations → OKF markdown → the user's Google Drive.
   **Not currently runnable** — see `docs/VAULT_SYNC.md`.
@@ -140,8 +162,14 @@ The loop: sidebar watches the host composer as you type → `recall_memories` RP
   there for anything that rewrites existing rows.
 - Adding a capture source: add a `SourceDef` to `lib/connectors/registry.ts` and
   one connector file using `installFetchInterceptor` or `installDomObserver`.
-  Do **not** hardcode an origin anywhere else. The synthetic fourth connector in
-  `scripts/test-connectors.ts` is the worked example.
+  Do **not** hardcode an origin anywhere else. `scripts/test-connectors.ts` ends
+  with two worked examples — a synthetic AI source and a synthetic human one.
+- Adding a **human** source additionally means a `metaFrom` that names the
+  author per turn. Emit the source's own id for the person (a phone, a jid, a
+  handle) and let `lib/people-identity.ts` normalise it; never pre-normalise or
+  invent one. If the connector can tell that a turn is the user's own, say so
+  with `is_self` — it is what stops the user's own messages being filed as
+  somebody else's.
 
 ## Build / test / run
 
@@ -160,6 +188,7 @@ npm run test:connectors          # source registry + connector SDK + msg identit
 npm run test:segment             # episode boundary rules (pure)
 npm run test:fts-query           # FTS5 MATCH builder (pure)
 npm run test:vectors             # int8 vector store: search, removal, file format
+npm run test:people              # identity normalisation + person/space resolution
 npm run test:migrations          # real migration SQL against real SQLite
 npm run build            # → .output/chrome-mv3  (load unpacked in chrome://extensions)
 npm run dev              # live dev
@@ -177,8 +206,19 @@ run `npm run build`, because `prebuild` triggers the ~25 MB model fetch and
 anchors, snippets, and acceptance criteria) — work from it, in order.**
 `docs/REPO_STATUS.md` has the current, verified state and a suggested work order.
 
-**Green as of Phase 2** — the typecheck is clean, all ten suites pass, and CI
+**Green as of Phase 3** — the typecheck is clean, all eleven suites pass, and CI
 blocks merges. The build-health items that used to sit here are fixed.
+
+**New in Phase 3 — Smriti captures human chat.** WhatsApp Web is the first
+non-AI source, which changes two things worth knowing before touching capture:
+- `host_permissions` now includes `web.whatsapp.com`, and the archive can hold
+  other people's messages. Every source has a per-host off switch in Settings,
+  but the store listing and privacy copy have not caught up — see the standing
+  gap below.
+- The memory extractor sweeps `role = 'user'` messages, and on a human source
+  that now includes what the user types to their friends. That is the intended
+  reach (it is where people actually say what they want), but extraction quality
+  there is unmeasured — heuristics tuned on AI prompts meet "haha ok".
 
 **Frozen (built, not shipped):**
 - **Sync and Vault UI are hidden** behind the `FEATURES` flag at the top of

@@ -36,6 +36,7 @@ import type {
   SearchHit,
 } from "@smriti/shared";
 import { injectFontFaces } from "../../lib/fonts";
+import { SOURCES, hostsForSource } from "../../lib/connectors/registry";
 
 // ─── feature flags ───────────────────────────────────────────────────────────
 
@@ -2398,11 +2399,16 @@ function SettingsView({ totals, embed, nav }: {
     }
   };
 
-  const hosts: Array<{ id: string; label: string; platform: string }> = [
-    { id: "claude.ai",         label: "Claude.ai",  platform: "claude"   },
-    { id: "chatgpt.com",       label: "ChatGPT.com", platform: "chatgpt"  },
-    { id: "gemini.google.com", label: "Gemini",      platform: "gemini"   },
-  ];
+  // Registry-derived, like every other origin list. Hardcoding it here meant a
+  // new source silently had no off switch — chat.openai.com was captured with
+  // no way to pause it, and a human source with no off switch is worse still.
+  const hosts: Array<{ id: string; label: string; platform: string }> = SOURCES.flatMap((s) =>
+    hostsForSource(s.id).map((host, i) => ({
+      id: host,
+      label: i === 0 ? s.label : `${s.label} (${host})`,
+      platform: s.id,
+    })),
+  );
 
   return (
     <div style={{ flex: 1, overflow: "auto", padding: "32px 40px 80px", maxWidth: 820, margin: "0 auto", width: "100%" }} className="scroll">

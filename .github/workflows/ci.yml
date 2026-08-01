@@ -76,6 +76,13 @@ jobs:
         working-directory: packages/extension
         run: npm run test:vectors
 
+      # Identity normalisation, plus the real person/space resolution SQL run
+      # against real SQLite. Guards user data from the other direction: getting
+      # this wrong files one person's messages under another person.
+      - name: Test — people, identity and spaces
+        working-directory: packages/extension
+        run: npm run test:people
+
       # Runs the real migration SQL against real SQLite. This one guards user
       # data: 006 rewrites every message's position and author, and 007 drops
       # and rebuilds both FTS indexes under a new tokenizer.

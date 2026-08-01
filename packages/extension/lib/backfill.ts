@@ -9,6 +9,7 @@
 import type { BackfillProgress, BackfillState, Platform, BackfillJobStatus, CaptureEvent } from "@smriti/shared";
 import { dbAll, dbGet, dbRun, markDirty } from "./db.js";
 import { ingestEvents } from "./ingest.js";
+import { sourceById } from "./connectors/registry.js";
 
 const BASE = "https://claude.ai";
 const DETAIL_DELAY_MS = 2_000;
@@ -65,7 +66,10 @@ export function getBackfillStatuses(filter?: Platform): BackfillJobStatus[] {
 }
 
 export async function startBackfill(platform: Platform): Promise<{ resuming: boolean }> {
-  if (platform !== "claude" && platform !== "chatgpt") {
+  // The registry decides, not a hardcoded pair — same reason every origin list
+  // is derived from it. A source that cannot be walked (Gemini, WhatsApp) says
+  // so in its capabilities.
+  if (!sourceById(platform)?.capabilities.backfill) {
     throw new Error(`backfill for ${platform} not implemented yet`);
   }
   if (active.has(platform)) return { resuming: true };

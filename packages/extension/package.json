@@ -20,6 +20,7 @@
     "test:segment": "tsx scripts/test-segment.ts",
     "test:fts-query": "tsx scripts/test-fts-query.ts",
     "test:vectors": "tsx scripts/test-vectors.ts",
+    "test:people": "tsx scripts/test-people.ts",
     "fetch:model": "node scripts/fetch-model.mjs",
     "postinstall": "wxt prepare"
   },

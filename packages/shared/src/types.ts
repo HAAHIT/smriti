@@ -19,6 +19,41 @@ export type Platform = SourceId;
  */
 export type Role = "user" | "assistant" | "system" | "tool";
 
+/**
+ * Where a conversation happened, one level above the thread.
+ *
+ * An AI source has exactly one space (`kind: "app"`, key `"app"`) and connectors
+ * there omit this entirely — ingest supplies it. A human source has one space
+ * per DM or group, so the connector has to say which.
+ */
+export interface CaptureSpace {
+  /** Source-local key: a phone number, a group jid, `"app"`. Unique per source. */
+  space_key: string;
+  kind: "app" | "dm" | "group";
+  /** Human-readable name — the contact's name, the group's title. */
+  label?: string;
+}
+
+/**
+ * Who spoke a turn, when the source knows more than "the user or the bot".
+ *
+ * Omitted by AI connectors: for them `role` determines the author completely
+ * (`user` → the user, `assistant` → that source's bot). A human source has to
+ * name the participant, because a group thread has N of them and the same
+ * person can appear in many threads.
+ */
+export interface CaptureAuthor {
+  /**
+   * The source's own stable id for this person — a phone number, a jid, a
+   * handle. Normalised by `lib/people-identity.ts` before it reaches the DB;
+   * emit it however the page gives it.
+   */
+  external_id: string;
+  display_name?: string;
+  /** True when this turn is the user's own. Decides `role: "user"`. */
+  is_self?: boolean;
+}
+
 export interface CaptureEventConversationSeen {
   kind: "conversation_seen";
   platform: Platform;
@@ -26,6 +61,8 @@ export interface CaptureEventConversationSeen {
   title?: string;
   url: string;
   observed_at: string;
+  /** Defaults to the source's app space. */
+  space?: CaptureSpace;
 }
 
 export interface CaptureEventMessageAppended {
@@ -63,6 +100,18 @@ export interface CaptureEventMessageAppended {
    */
   position: number;
   position_authoritative?: boolean;
+  /**
+   * Who spoke. Omit on an AI source — `role` says everything there. A human
+   * source must supply it, or every participant in the thread collapses into
+   * "the assistant".
+   */
+  author?: CaptureAuthor;
+  /**
+   * The space this message's conversation belongs to. Carried on the message
+   * event as well as `conversation_seen` because a message can be the first
+   * thing we see of a thread, and the conversation row it creates needs a space.
+   */
+  space?: CaptureSpace;
 }
 
 export interface CaptureEventConversationUpdated {
